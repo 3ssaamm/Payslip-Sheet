@@ -35,7 +35,7 @@ function getMasterDatabase() {
 function parseMoney(val) {
   if (typeof val === 'number') return val;
   if (!val) return 0;
-  return Number(String(val).replace(/[^0-9.-]+/g,"")) || 0;
+  return Number(String(val).replace(/[^0-9.-]+/g, "")) || 0;
 }
 
 /**
@@ -46,7 +46,7 @@ function getSaturdayOfDate(d) {
   let day = dt.getDay(); // 0 is Sunday, 6 is Saturday
   let diff = 6 - day;
   dt.setDate(dt.getDate() + diff);
-  dt.setHours(0,0,0,0);
+  dt.setHours(0, 0, 0, 0);
   return dt;
 }
 
@@ -55,7 +55,7 @@ function getSaturdayOfDate(d) {
  */
 function setupInitialSheets() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // --- 1. SETUP LOCAL ADVANCES SHEET ---
   const advName = "Advances";
   let advSheet = ss.getSheetByName(advName);
@@ -63,14 +63,14 @@ function setupInitialSheets() {
     advSheet = ss.insertSheet(advName);
     const headers = [["Driver Name", "Amount", "Fees"]];
     advSheet.getRange("A1:C1").setValues(headers).setFontWeight("bold").setBackground("#EFEFEF");
-    advSheet.getRange("B2:C").setNumberFormat("$#,##0.00"); 
-    
+    advSheet.getRange("B2:C").setNumberFormat("$#,##0.00");
+
     let formulas = [];
-    for(let i = 2; i <= 501; i++) {
+    for (let i = 2; i <= 501; i++) {
       formulas.push([`=IF(B${i}<>"", B${i}*0.03, "")`]);
     }
     advSheet.getRange("C2:C501").setFormulas(formulas);
-    advSheet.setColumnWidth(1, 180); advSheet.setColumnWidth(2, 100); advSheet.setColumnWidth(3, 100); 
+    advSheet.setColumnWidth(1, 180); advSheet.setColumnWidth(2, 100); advSheet.setColumnWidth(3, 100);
   }
 
   // --- 2. READ LOCAL TRIP INFO & FIND SATURDAY ---
@@ -86,22 +86,23 @@ function setupInitialSheets() {
   tripData.forEach(row => {
     let driver = row[3];
     if (!driver) return;
-    
+
     let gross = Number(row[12]) || 0;
     let tolls = Number(row[10]) || 0;
     let cash = Number(row[11]) || 0;
     let net = gross - tolls;
     let tDate = new Date(row[4]);
-    
+    tDate.setHours(12, 0, 0, 0);
+
     if (!driverInfo[driver]) {
       driverInfo[driver] = { gross: 0, tolls: 0, net: 0, cash: 0, earliestDate: tDate };
     }
-    
+
     driverInfo[driver].gross += gross;
     driverInfo[driver].tolls += tolls;
     driverInfo[driver].net += net;
     driverInfo[driver].cash += cash;
-    
+
     if (!isNaN(tDate.getTime())) {
       if (tDate < driverInfo[driver].earliestDate) driverInfo[driver].earliestDate = tDate;
       if (tDate.getTime() > maxTripTime) maxTripTime = tDate.getTime();
@@ -112,13 +113,13 @@ function setupInitialSheets() {
   let stampString = "";
   if (maxTripTime > 0) {
     let maxTripDate = new Date(maxTripTime);
-    let dayOfWeek = maxTripDate.getDay(); 
-    let daysToSunday = (7 - dayOfWeek) % 7; 
+    let dayOfWeek = maxTripDate.getDay();
+    let daysToSunday = (7 - dayOfWeek) % 7;
     let endOfWeekSunday = new Date(maxTripDate);
     endOfWeekSunday.setDate(maxTripDate.getDate() + daysToSunday);
-    
+
     stampDate = new Date(endOfWeekSunday);
-    stampDate.setDate(endOfWeekSunday.getDate() + 6); 
+    stampDate.setDate(endOfWeekSunday.getDate() + 6);
     stampString = Utilities.formatDate(stampDate, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
   }
 
@@ -160,12 +161,12 @@ function setupInitialSheets() {
       });
     }
   }
-  
+
   let isAlreadyUpdated = localSettingsSheet.getRange("O1").getValue() === "DB_UPDATED";
 
   // --- 5. FETCH MASTER DB (PROMOS & LOANS) ---
   let masterDB = getMasterDatabase();
-  if (!masterDB) return; 
+  if (!masterDB) return;
 
   let masterSetSheet = masterDB.getSheetByName("Settings");
   if (!masterSetSheet) return SpreadsheetApp.getUi().alert("Error: 'Settings' sheet missing in Master Database!");
@@ -180,9 +181,9 @@ function setupInitialSheets() {
   let masterLoanSheet = masterDB.getSheetByName("Loans");
   if (!masterLoanSheet) return SpreadsheetApp.getUi().alert("Error: 'Loans' sheet missing in Master Database!");
 
-  let activeLoans = {}; 
+  let activeLoans = {};
   let stampDateObj = new Date(stampString);
-  stampDateObj.setHours(0,0,0,0);
+  stampDateObj.setHours(0, 0, 0, 0);
 
   if (masterLoanSheet.getLastRow() >= 2) {
     let loanData = masterLoanSheet.getRange(2, 1, masterLoanSheet.getLastRow() - 1, 8).getValues();
@@ -192,25 +193,25 @@ function setupInitialSheets() {
       let totLoan = parseMoney(row[2]); // Col C
       let install = parseMoney(row[3]); // Col D
       let paidSoFar = parseMoney(row[4]); // Col E
-      
+
       let remBal = totLoan - paidSoFar; // Auto calculate Remaining Balance
-      
+
       let lastPayDateStr = "";
       if (row[5] && !isNaN(new Date(row[5]).getTime())) { // Col F
-         lastPayDateStr = Utilities.formatDate(new Date(row[5]), ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
+        lastPayDateStr = Utilities.formatDate(new Date(row[5]), ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
       }
       let lastPayAmt = parseMoney(row[6]); // Col G
-      
+
       if (dName && lDate) {
         // Buffer Rule: Only count if Payslip Saturday is strictly greater than Loan Issue Saturday
         let loanSat = getSaturdayOfDate(lDate);
         if (stampDateObj.getTime() > loanSat.getTime()) {
           if (!activeLoans[dName]) activeLoans[dName] = 0;
-          
+
           if (lastPayDateStr === stampString) {
-             activeLoans[dName] += lastPayAmt; // Already locked in for this week
+            activeLoans[dName] += lastPayAmt; // Already locked in for this week
           } else if (remBal > 0) {
-             activeLoans[dName] += Math.min(install, remBal);
+            activeLoans[dName] += Math.min(install, remBal);
           }
         }
       }
@@ -219,7 +220,7 @@ function setupInitialSheets() {
 
   // --- 6. APPLY RULES & STAMP MASTER ARRAY ---
   const EIGHTY_NINETY_DRIVERS = ["Angel Yoy"];
-  const DEFAULT_RATE = 0.90; 
+  const DEFAULT_RATE = 0.90;
   const PROMO_RATE = 0.95;
 
   let output = [];
@@ -227,7 +228,7 @@ function setupInitialSheets() {
 
   for (let driver in driverInfo) {
     let stringDriver = String(driver);
-    
+
     if (masterIndexMap[stringDriver] === undefined) {
       masterData.push([stringDriver, "", "", "", "", ""]);
       masterIndexMap[stringDriver] = masterData.length - 1;
@@ -243,8 +244,8 @@ function setupInitialSheets() {
 
     let used = 0;
     let alreadyStampedThisWeek = false;
-    
-    for(let col = 2; col <= 5; col++) {
+
+    for (let col = 2; col <= 5; col++) {
       if (mRow[col] && String(mRow[col]).trim() !== "") {
         used++;
         let existingDate = new Date(mRow[col]);
@@ -259,24 +260,24 @@ function setupInitialSheets() {
     let currentWeekNumber = 0;
 
     if (isValidStart) {
-      let startObj = new Date(mStartDate); startObj.setHours(0,0,0,0);
-      let earliestObj = new Date(driverInfo[driver].earliestDate); earliestObj.setHours(0,0,0,0);
+      let startObj = new Date(mStartDate); startObj.setHours(0, 0, 0, 0);
+      let earliestObj = new Date(driverInfo[driver].earliestDate); earliestObj.setHours(0, 0, 0, 0);
 
       if (earliestObj >= startObj) {
         if (alreadyStampedThisWeek) {
           isActivePromo = true;
-          currentWeekNumber = used; 
+          currentWeekNumber = used;
         } else if (used < 4) {
           isActivePromo = true;
-          currentWeekNumber = used + 1; 
+          currentWeekNumber = used + 1;
 
           // PROMO STAMP ACTION 
           if (!isAlreadyUpdated && stampDate) {
-            for(let col = 2; col <= 5; col++) {
+            for (let col = 2; col <= 5; col++) {
               if (!mRow[col] || String(mRow[col]).trim() === "") {
-                 mRow[col] = stampDate; 
-                 updatedMaster = true;
-                 break; 
+                mRow[col] = stampDate;
+                updatedMaster = true;
+                break;
               }
             }
           }
@@ -298,27 +299,27 @@ function setupInitialSheets() {
 
     let override = existingLocalOverrides[driver] !== undefined ? existingLocalOverrides[driver] : "";
     let activeRate = override !== "" ? Number(override) : sysRate;
-    
+
     // Financial Math (Advances First!)
     let driverPay = driverInfo[driver].net * activeRate;
     let driverTotal = driverPay + driverInfo[driver].tolls;
     let basicBalance = driverTotal - driverInfo[driver].cash;
-    
+
     let debits = driverDebits[driver] || 0;
     let advances = driverAdvances[driver] || 0;
-    
+
     // Calculate exactly what is available to cover the loan after advances
     let actualAvailableFunds = basicBalance + debits - advances;
-    
+
     let maxLoanIntended = activeLoans[driver] || 0;
     let predictedLoanDeduction = Math.min(maxLoanIntended, Math.max(0, actualAvailableFunds));
-    
+
     let dashboardDriverBalance = basicBalance - predictedLoanDeduction; // Dashboard Math
     let companyFee = driverInfo[driver].gross - driverTotal;
 
     output.push([
       driver, driverInfo[driver].gross, driverInfo[driver].tolls, driverInfo[driver].net,
-      sysRate, driverPay, driverTotal, driverInfo[driver].cash, predictedLoanDeduction, 
+      sysRate, driverPay, driverTotal, driverInfo[driver].cash, predictedLoanDeduction,
       dashboardDriverBalance, companyFee, promoDisplay, override
     ]);
   }
@@ -329,7 +330,7 @@ function setupInitialSheets() {
     // FIX: Clear the old dimensions first so it can dynamically expand to fit the new driver Array length!
     masterSetSheet.getRange(2, 1, Math.max(masterSetSheet.getLastRow() - 1, 1), 6).clearContent();
     masterSetSheet.getRange(2, 1, masterData.length, 6).setValues(masterData);
-    
+
     if (updatedMaster) {
       localSettingsSheet.getRange("O1").setValue("DB_UPDATED").setFontColor("white");
       updateMessage += `\n\n(Master Database has been securely stamped with Saturday's date: ${stampString}).`;
@@ -337,19 +338,19 @@ function setupInitialSheets() {
   }
 
   // --- 8. FORMATTING THE PROFESSIONAL DASHBOARD ---
-  output.sort((a,b) => a[0].localeCompare(b[0]));
+  output.sort((a, b) => a[0].localeCompare(b[0]));
   localSettingsSheet.getRange("A:M").clearContent().clearFormat();
-  
+
   let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
-  
+
   let headerRange = localSettingsSheet.getRange("A1:M1");
   headerRange.setValues([newHeaders])
     .setFontWeight("bold").setBackground("#4a86e8").setFontColor("white")
     .setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
-    
+
   localSettingsSheet.setRowHeight(1, 40);
 
-  if(output.length > 0) {
+  if (output.length > 0) {
     let dataRange = localSettingsSheet.getRange(2, 1, output.length, 13);
     dataRange.setValues(output);
     dataRange.setVerticalAlignment("middle");
@@ -358,22 +359,22 @@ function setupInitialSheets() {
     fullTableRange.setBorder(true, true, true, true, true, true, "#b7b7b7", SpreadsheetApp.BorderStyle.SOLID);
 
     for (let i = 0; i < output.length; i++) {
-      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 12).setBackground("#f3f3f3"); 
+      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 12).setBackground("#f3f3f3");
     }
 
     localSettingsSheet.getRange(2, 2, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
     localSettingsSheet.getRange(2, 6, output.length, 6).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-    localSettingsSheet.getRange(2, 1, output.length, 1).setHorizontalAlignment("left"); 
+    localSettingsSheet.getRange(2, 1, output.length, 1).setHorizontalAlignment("left");
     localSettingsSheet.getRange(2, 5, output.length, 1).setNumberFormat("0.00%").setHorizontalAlignment("center");
     localSettingsSheet.getRange(2, 12, output.length, 1).setHorizontalAlignment("center");
     localSettingsSheet.getRange(2, 13, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
   }
-  
+
   localSettingsSheet.autoResizeColumns(1, 13);
   for (let c = 1; c <= 13; c++) {
     localSettingsSheet.setColumnWidth(c, localSettingsSheet.getColumnWidth(c) + 20);
   }
-  
+
   SpreadsheetApp.getUi().alert(updateMessage);
 }
 
@@ -389,7 +390,7 @@ function runCompletePayroll() {
   if (!localSetSheet) return SpreadsheetApp.getUi().alert("Error: Run Step 1 first to generate the Settings sheet.");
 
   let finalRates = {};
-  
+
   if (localSetSheet.getLastRow() >= 2) {
     let headers = localSetSheet.getRange(1, 1, 1, localSetSheet.getLastColumn()).getValues()[0];
     let rateColIndex = headers.indexOf("System Rate");
@@ -399,7 +400,7 @@ function runCompletePayroll() {
       let driver = row[0];
       let sysRate = rateColIndex > -1 ? Number(row[rateColIndex]) || 0 : 0;
       let override = overrideColIndex > -1 ? row[overrideColIndex] : "";
-      
+
       if (driver) {
         finalRates[driver] = (override !== "" && override != null) ? Number(override) : sysRate;
       }
@@ -413,7 +414,7 @@ function runCompletePayroll() {
   if (!tripSheet) return SpreadsheetApp.getUi().alert("Error: 'Trip Information' sheet not found.");
 
   const lastRow = tripSheet.getLastRow();
-  if (lastRow < 3) return; 
+  if (lastRow < 3) return;
 
   const tripData = tripSheet.getRange(3, 1, lastRow - 2, 14).getValues();
 
@@ -428,12 +429,13 @@ function runCompletePayroll() {
     let cash = Number(row[11]) || 0;
     let netFare = gross - tolls;
     let tDate = new Date(row[4]);
-    
+    tDate.setHours(12, 0, 0, 0);
+
     if (!isNaN(tDate.getTime()) && tDate.getTime() > maxTripTime) {
       maxTripTime = tDate.getTime();
     }
 
-    let rate = finalRates[driver] || 0.90; 
+    let rate = finalRates[driver] || 0.90;
 
     let cols = {
       priceNoToll: netFare, driverPay: netFare * rate, rate: rate, tolls: tolls,
@@ -451,13 +453,13 @@ function runCompletePayroll() {
   let stampString = "";
   if (maxTripTime > 0) {
     let maxTripDate = new Date(maxTripTime);
-    let dayOfWeek = maxTripDate.getDay(); 
-    let daysToSunday = (7 - dayOfWeek) % 7; 
+    let dayOfWeek = maxTripDate.getDay();
+    let daysToSunday = (7 - dayOfWeek) % 7;
     let endOfWeekSunday = new Date(maxTripDate);
     endOfWeekSunday.setDate(maxTripDate.getDate() + daysToSunday);
-    
+
     stampDate = new Date(endOfWeekSunday);
-    stampDate.setDate(endOfWeekSunday.getDate() + 6); 
+    stampDate.setDate(endOfWeekSunday.getDate() + 6);
     stampString = Utilities.formatDate(stampDate, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
   }
 
@@ -474,7 +476,7 @@ function runCompletePayroll() {
   tripSheet.getRange("Q1").setNumberFormat('"Avg" 0.00%');
   tripSheet.getRange(3, 17, lastRow - 2, 1).setNumberFormat("0.00%");
   tripSheet.setColumnWidths(15, 8, 130);
-  SpreadsheetApp.flush(); 
+  SpreadsheetApp.flush();
 
   // ==========================================
   // FETCH MASTER DB LOANS FOR PAYSLIP
@@ -485,7 +487,7 @@ function runCompletePayroll() {
   let masterLoanSheet = null;
 
   let stampDateObj = new Date(stampString);
-  stampDateObj.setHours(0,0,0,0);
+  stampDateObj.setHours(0, 0, 0, 0);
 
   if (masterDB) {
     masterLoanSheet = masterDB.getSheetByName("Loans");
@@ -497,13 +499,13 @@ function runCompletePayroll() {
         let totLoan = parseMoney(row[2]); // Col C
         let install = parseMoney(row[3]); // Col D
         let paidSoFar = parseMoney(row[4]); // Col E
-        
+
         let remBal = totLoan - paidSoFar; // Auto calculate Remaining Balance
-        row[7] = remBal; 
-        
+        row[7] = remBal;
+
         let lastPayDateStr = "";
         if (row[5] && !isNaN(new Date(row[5]).getTime())) { // Col F
-           lastPayDateStr = Utilities.formatDate(new Date(row[5]), ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
+          lastPayDateStr = Utilities.formatDate(new Date(row[5]), ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
         }
         let lastPayAmt = parseMoney(row[6]); // Col G
 
@@ -512,10 +514,10 @@ function runCompletePayroll() {
           let loanSat = getSaturdayOfDate(lDate);
           if (stampDateObj.getTime() > loanSat.getTime()) {
             if (!driverLoans[dName]) driverLoans[dName] = [];
-            driverLoans[dName].push({ 
-              idx: idx, 
-              date: lDate, 
-              remBal: remBal, 
+            driverLoans[dName].push({
+              idx: idx,
+              date: lDate,
+              remBal: remBal,
               install: install,
               lastPayDateStr: lastPayDateStr,
               lastPayAmt: lastPayAmt
@@ -556,7 +558,9 @@ function runCompletePayroll() {
   tripData.forEach(row => {
     let name = row[3];
     if (!name) return;
-    let dateStr = Utilities.formatDate(new Date(row[4]), ss.getSpreadsheetTimeZone(), "dd-MM-yy");
+    let tripDate = new Date(row[4]);
+    tripDate.setHours(12, 0, 0, 0);
+    let dateStr = Utilities.formatDate(tripDate, ss.getSpreadsheetTimeZone(), "dd-MM-yy");
     let gross = Number(row[12]) || 0; let tolls = Number(row[10]) || 0; let cash = Number(row[11]) || 0;
     let pay = (gross - tolls) * (finalRates[name] || 0.90);
 
@@ -565,7 +569,7 @@ function runCompletePayroll() {
 
     let d = drivers[name].dates[dateStr];
     d.count += 1; d.pay += pay; d.tolls += tolls; d.total += (pay + tolls);
-    drivers[name].totalTrips += 1; drivers[name].totalPay += pay; drivers[name].totalTolls += tolls; 
+    drivers[name].totalTrips += 1; drivers[name].totalPay += pay; drivers[name].totalTolls += tolls;
     drivers[name].totalTotal += (pay + tolls); drivers[name].totalCash += cash;
   });
 
@@ -577,7 +581,7 @@ function runCompletePayroll() {
 
   let currentRow = 2;
   let totalAllBalances = 0;
-  let masterLoanUpdates = []; 
+  let masterLoanUpdates = [];
 
   for (let name in drivers) {
     let d = drivers[name];
@@ -617,11 +621,11 @@ function runCompletePayroll() {
     let debitSum = 0;
     if (driverDebits[name]) {
       driverDebits[name].forEach(item => {
-        let cleanDesc = String(item.desc).toLowerCase().includes("verrazano") || String(item.desc).toLowerCase().includes("bridge") || String(item.desc).toLowerCase().includes("wrong route") || String(item.desc).toLowerCase().includes("tunnel") ? "Penalty: Wrong Bridge/Route" : 
-                        String(item.desc).toLowerCase().includes("cancel") ? "Cancellation Fee" : 
-                        String(item.desc).toLowerCase().includes("late") ? "Penalty: Late Arrival" : 
-                        String(item.desc).toLowerCase().includes("no show") ? "Penalty: No Show" : 
-                        String(item.desc).replace(/TRIP ID/gi, "").replace(/ for \d+/gi, "").replace(/\b\d{5,}\b/g, "").replace(/\s+/g, " ").trim();
+        let cleanDesc = String(item.desc).toLowerCase().includes("verrazano") || String(item.desc).toLowerCase().includes("bridge") || String(item.desc).toLowerCase().includes("wrong route") || String(item.desc).toLowerCase().includes("tunnel") ? "Penalty: Wrong Bridge/Route" :
+          String(item.desc).toLowerCase().includes("cancel") ? "Cancellation Fee" :
+            String(item.desc).toLowerCase().includes("late") ? "Penalty: Late Arrival" :
+              String(item.desc).toLowerCase().includes("no show") ? "Penalty: No Show" :
+                String(item.desc).replace(/TRIP ID/gi, "").replace(/ for \d+/gi, "").replace(/\b\d{5,}\b/g, "").replace(/\s+/g, " ").trim();
         let dateSuffix = (item.date && !isNaN(new Date(item.date).getTime())) ? " " + Utilities.formatDate(new Date(item.date), ss.getSpreadsheetTimeZone(), "dd-MM") : "";
         paySheet.getRange(currentRow, 4).setValue((item.amount < 0 ? "Sub: " : "Add: ") + cleanDesc + dateSuffix);
         paySheet.getRange(currentRow, 6).setValue(item.amount);
@@ -658,10 +662,10 @@ function runCompletePayroll() {
           let isAlreadyProcessedThisWeek = (loan.lastPayDateStr === stampString);
 
           if (isAlreadyProcessedThisWeek) {
-             actualDeduct = Math.min(loan.lastPayAmt, fundsAvailable);
+            actualDeduct = Math.min(loan.lastPayAmt, fundsAvailable);
           } else if (loan.remBal > 0) {
-             let maxDeduct = Math.min(loan.install, loan.remBal); 
-             actualDeduct = Math.min(maxDeduct, fundsAvailable); 
+            let maxDeduct = Math.min(loan.install, loan.remBal);
+            actualDeduct = Math.min(maxDeduct, fundsAvailable);
           }
 
           if (actualDeduct > 0) {
@@ -674,13 +678,13 @@ function runCompletePayroll() {
             paySheet.getRange(currentRow, 4).setValue("Sub: Loan Repayment" + dStr);
             paySheet.getRange(currentRow, 6).setValue(-actualDeduct);
             currentRow++;
-            
+
             fundsAvailable -= actualDeduct;
             totalLoanDeducted += actualDeduct;
 
             if (!isAlreadyProcessedThisWeek) {
-              masterLoanUpdates.push({ 
-                idx: loan.idx, 
+              masterLoanUpdates.push({
+                idx: loan.idx,
                 addAmount: actualDeduct,
                 stampDate: stampDate
               });
@@ -707,9 +711,9 @@ function runCompletePayroll() {
   paySheet.getRange(1, 4, currentRow + 1, 3).setNumberFormat("#,##0.00");
   paySheet.getRange(1, 3, currentRow, 1).setHorizontalAlignment("center");
   paySheet.getRange(1, 4, currentRow, 3).setHorizontalAlignment("right");
-  paySheet.setColumnWidth(1, 60); paySheet.setColumnWidth(2, 160); paySheet.setColumnWidth(3, 100); 
+  paySheet.setColumnWidth(1, 60); paySheet.setColumnWidth(2, 160); paySheet.setColumnWidth(3, 100);
   paySheet.setColumnWidth(4, 200); paySheet.setColumnWidth(5, 100); paySheet.setColumnWidth(6, 120);
-  
+
   if (paySheet.getMaxRows() > currentRow) paySheet.deleteRows(currentRow + 1, paySheet.getMaxRows() - currentRow);
   if (paySheet.getMaxColumns() > 7) paySheet.deleteColumns(8, paySheet.getMaxColumns() - 7);
   ss.setActiveSheet(paySheet);
@@ -722,13 +726,13 @@ function runCompletePayroll() {
       let totLoan = parseMoney(r[2]);   // Col C
       let paidSoFar = parseMoney(r[4]); // Col E
       let newPaidSoFar = paidSoFar + upd.addAmount;
-      
+
       r[4] = newPaidSoFar;              // Col E: Amount Paid So Far
       r[5] = upd.stampDate;             // Col F: Last Payment Date
       r[6] = upd.addAmount;             // Col G: Last Payment Amount
       r[7] = totLoan - newPaidSoFar;    // Col H: Remaining Balance (Auto Calculated!)
     });
-    
+
     // Write back the whole perfectly calculated array
     masterLoanSheet.getRange(2, 1, masterLoanData.length, 8).setValues(masterLoanData);
     alertMessage += "\n\n(Master Database 'Loans' sheet has been securely updated. All balances auto-calculated. The system locked the dates so you can safely re-run this file without double counting!).";
