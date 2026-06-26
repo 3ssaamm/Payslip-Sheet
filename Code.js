@@ -44,7 +44,7 @@ function parseMoney(val) {
 function getSaturdayOfDate(d) {
   let dt = new Date(d);
   let day = dt.getDay(); // 0 is Sunday, 6 is Saturday
-  let diff = 6 - day;
+  let diff = day === 0 ? -1 : 6 - day; // Group Sunday with the previous Saturday
   dt.setDate(dt.getDate() + diff);
   dt.setHours(0, 0, 0, 0);
   return dt;
