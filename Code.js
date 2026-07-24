@@ -151,13 +151,18 @@ function setupInitialSheets() {
   if (!localSettingsSheet) localSettingsSheet = ss.insertSheet("Settings");
 
   let existingLocalOverrides = {};
+  let existingLocalAdditions = {};
   if (localSettingsSheet.getLastRow() >= 2) {
     let headers = localSettingsSheet.getRange(1, 1, 1, localSettingsSheet.getLastColumn()).getValues()[0];
     let overrideColIndex = headers.indexOf("Manual Override %");
-    if (overrideColIndex > -1) {
+    let additionColIndex = headers.indexOf("Refunds / Additions");
+    if (overrideColIndex > -1 || additionColIndex > -1) {
       let oldData = localSettingsSheet.getRange(2, 1, localSettingsSheet.getLastRow() - 1, localSettingsSheet.getLastColumn()).getValues();
       oldData.forEach(r => {
-        if (r[0] && r[overrideColIndex] !== "") existingLocalOverrides[r[0]] = r[overrideColIndex];
+        if (r[0]) {
+          if (overrideColIndex > -1 && r[overrideColIndex] !== "") existingLocalOverrides[r[0]] = r[overrideColIndex];
+          if (additionColIndex > -1 && r[additionColIndex] !== "") existingLocalAdditions[r[0]] = r[additionColIndex];
+        }
       });
     }
   }
@@ -300,6 +305,9 @@ function setupInitialSheets() {
     let override = existingLocalOverrides[driver] !== undefined ? existingLocalOverrides[driver] : "";
     let activeRate = override !== "" ? Number(override) : sysRate;
 
+    let additionalPay = existingLocalAdditions[driver] !== undefined ? parseMoney(existingLocalAdditions[driver]) : 0;
+    let additionalPayDisplay = existingLocalAdditions[driver] !== undefined ? existingLocalAdditions[driver] : "";
+
     // Financial Math (Advances First!)
     let driverPay = driverInfo[driver].net * activeRate;
     let driverTotal = driverPay + driverInfo[driver].tolls;
@@ -308,18 +316,18 @@ function setupInitialSheets() {
     let debits = driverDebits[driver] || 0;
     let advances = driverAdvances[driver] || 0;
 
-    // Calculate exactly what is available to cover the loan after advances
-    let actualAvailableFunds = basicBalance + debits - advances;
+    // Calculate exactly what is available to cover the loan after advances & additional payments
+    let actualAvailableFunds = basicBalance + debits - advances + additionalPay;
 
     let maxLoanIntended = activeLoans[driver] || 0;
     let predictedLoanDeduction = Math.min(maxLoanIntended, Math.max(0, actualAvailableFunds));
 
-    let dashboardDriverBalance = basicBalance - predictedLoanDeduction; // Dashboard Math
+    let dashboardDriverBalance = basicBalance + additionalPay - predictedLoanDeduction; // Dashboard Math
     let companyFee = driverInfo[driver].gross - driverTotal;
 
     output.push([
       driver, driverInfo[driver].gross, driverInfo[driver].tolls, driverInfo[driver].net,
-      sysRate, driverPay, driverTotal, driverInfo[driver].cash, predictedLoanDeduction,
+      sysRate, driverPay, driverTotal, driverInfo[driver].cash, additionalPayDisplay, predictedLoanDeduction,
       dashboardDriverBalance, companyFee, promoDisplay, override
     ]);
   }
@@ -339,11 +347,11 @@ function setupInitialSheets() {
 
   // --- 8. FORMATTING THE PROFESSIONAL DASHBOARD ---
   output.sort((a, b) => a[0].localeCompare(b[0]));
-  localSettingsSheet.getRange("A:M").clearContent().clearFormat();
+  localSettingsSheet.getRange("A:N").clearContent().clearFormat();
 
-  let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
+  let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Refunds / Additions", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
 
-  let headerRange = localSettingsSheet.getRange("A1:M1");
+  let headerRange = localSettingsSheet.getRange("A1:N1");
   headerRange.setValues([newHeaders])
     .setFontWeight("bold").setBackground("#4a86e8").setFontColor("white")
     .setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
@@ -351,27 +359,29 @@ function setupInitialSheets() {
   localSettingsSheet.setRowHeight(1, 40);
 
   if (output.length > 0) {
-    let dataRange = localSettingsSheet.getRange(2, 1, output.length, 13);
+    let dataRange = localSettingsSheet.getRange(2, 1, output.length, 14);
     dataRange.setValues(output);
     dataRange.setVerticalAlignment("middle");
 
-    let fullTableRange = localSettingsSheet.getRange(1, 1, output.length + 1, 13);
+    let fullTableRange = localSettingsSheet.getRange(1, 1, output.length + 1, 14);
     fullTableRange.setBorder(true, true, true, true, true, true, "#b7b7b7", SpreadsheetApp.BorderStyle.SOLID);
 
     for (let i = 0; i < output.length; i++) {
-      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 12).setBackground("#f3f3f3");
+      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 14).setBackground("#f3f3f3");
     }
 
     localSettingsSheet.getRange(2, 2, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-    localSettingsSheet.getRange(2, 6, output.length, 6).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 6, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 9, output.length, 1).setBackground("#FFF2CC").setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 10, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
     localSettingsSheet.getRange(2, 1, output.length, 1).setHorizontalAlignment("left");
     localSettingsSheet.getRange(2, 5, output.length, 1).setNumberFormat("0.00%").setHorizontalAlignment("center");
-    localSettingsSheet.getRange(2, 12, output.length, 1).setHorizontalAlignment("center");
-    localSettingsSheet.getRange(2, 13, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
+    localSettingsSheet.getRange(2, 13, output.length, 1).setHorizontalAlignment("center");
+    localSettingsSheet.getRange(2, 14, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
   }
 
-  localSettingsSheet.autoResizeColumns(1, 13);
-  for (let c = 1; c <= 13; c++) {
+  localSettingsSheet.autoResizeColumns(1, 14);
+  for (let c = 1; c <= 14; c++) {
     localSettingsSheet.setColumnWidth(c, localSettingsSheet.getColumnWidth(c) + 20);
   }
 
@@ -390,19 +400,23 @@ function runCompletePayroll() {
   if (!localSetSheet) return SpreadsheetApp.getUi().alert("Error: Run Step 1 first to generate the Settings sheet.");
 
   let finalRates = {};
+  let additionalPayments = {};
 
   if (localSetSheet.getLastRow() >= 2) {
     let headers = localSetSheet.getRange(1, 1, 1, localSetSheet.getLastColumn()).getValues()[0];
     let rateColIndex = headers.indexOf("System Rate");
     let overrideColIndex = headers.indexOf("Manual Override %");
+    let additionalColIndex = headers.indexOf("Refunds / Additions");
 
     localSetSheet.getRange(2, 1, localSetSheet.getLastRow() - 1, localSetSheet.getLastColumn()).getValues().forEach(row => {
       let driver = row[0];
       let sysRate = rateColIndex > -1 ? Number(row[rateColIndex]) || 0 : 0;
       let override = overrideColIndex > -1 ? row[overrideColIndex] : "";
+      let addPay = additionalColIndex > -1 ? parseMoney(row[additionalColIndex]) : 0;
 
       if (driver) {
         finalRates[driver] = (override !== "" && override != null) ? Number(override) : sysRate;
+        additionalPayments[driver] = addPay;
       }
     });
   }
@@ -648,8 +662,15 @@ function runCompletePayroll() {
       });
     }
 
-    // --- NEW: 100% IDEMPOTENT LOAN CALCULATION (Advances First) ---
-    let preLoanBalance = d.totalTotal - d.totalCash + debitSum - advanceSum;
+    let addPayAmt = additionalPayments[name] || 0;
+    if (addPayAmt !== 0) {
+      paySheet.getRange(currentRow, 4).setValue(addPayAmt > 0 ? "Add: Refund / Addition" : "Sub: Refund / Deduction");
+      paySheet.getRange(currentRow, 6).setValue(addPayAmt);
+      currentRow++;
+    }
+
+    // --- NEW: 100% IDEMPOTENT LOAN CALCULATION (Advances & Additions First) ---
+    let preLoanBalance = d.totalTotal - d.totalCash + debitSum - advanceSum + addPayAmt;
     let fundsAvailable = Math.max(0, preLoanBalance);
     let totalLoanDeducted = 0;
 
