@@ -39,10 +39,37 @@ function parseMoney(val) {
 }
 
 /**
+ * Helper: Parses any date input safely without timezone shifting issues.
+ */
+function parseTripDate(val, timeZone) {
+  if (!val) return null;
+  let tz = timeZone || SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  if (val instanceof Date) {
+    let str = Utilities.formatDate(val, tz, "yyyy-MM-dd");
+    let parts = str.split("-");
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0, 0);
+  }
+  if (typeof val === 'string') {
+    let s = val.trim();
+    let match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (match) {
+      return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+    }
+  }
+  let dObj = new Date(val);
+  if (!isNaN(dObj.getTime())) {
+    let str = Utilities.formatDate(dObj, tz, "yyyy-MM-dd");
+    let parts = str.split("-");
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0, 0);
+  }
+  return null;
+}
+
+/**
  * Helper: Finds the Saturday of the week a date falls in (for the Buffer Rule)
  */
 function getSaturdayOfDate(d) {
-  let dt = new Date(d);
+  let dt = parseTripDate(d) || new Date(d);
   let day = dt.getDay(); // 0 is Sunday, 6 is Saturday
   let diff = day === 0 ? -1 : 6 - day; // Group Sunday with the previous Saturday
   dt.setDate(dt.getDate() + diff);
@@ -91,8 +118,8 @@ function setupInitialSheets() {
     let tolls = Number(row[10]) || 0;
     let cash = Number(row[11]) || 0;
     let net = gross - tolls;
-    let tDate = new Date(row[4]);
-    tDate.setHours(12, 0, 0, 0);
+    let tDate = parseTripDate(row[4], ss.getSpreadsheetTimeZone());
+    if (!tDate) return;
 
     if (!driverInfo[driver]) {
       driverInfo[driver] = { gross: 0, tolls: 0, net: 0, cash: 0, earliestDate: tDate };
@@ -442,10 +469,9 @@ function runCompletePayroll() {
     let tolls = Number(row[10]) || 0;
     let cash = Number(row[11]) || 0;
     let netFare = gross - tolls;
-    let tDate = new Date(row[4]);
-    tDate.setHours(12, 0, 0, 0);
+    let tDate = parseTripDate(row[4], ss.getSpreadsheetTimeZone());
 
-    if (!isNaN(tDate.getTime()) && tDate.getTime() > maxTripTime) {
+    if (tDate && !isNaN(tDate.getTime()) && tDate.getTime() > maxTripTime) {
       maxTripTime = tDate.getTime();
     }
 
@@ -572,16 +598,17 @@ function runCompletePayroll() {
   tripData.forEach(row => {
     let name = row[3];
     if (!name) return;
-    let tripDate = new Date(row[4]);
-    tripDate.setHours(12, 0, 0, 0);
-    let dateStr = Utilities.formatDate(tripDate, ss.getSpreadsheetTimeZone(), "dd-MM-yy");
+    let tripDate = parseTripDate(row[4], ss.getSpreadsheetTimeZone());
+    if (!tripDate) return;
+    let isoDateStr = Utilities.formatDate(tripDate, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd");
+    let displayDateStr = Utilities.formatDate(tripDate, ss.getSpreadsheetTimeZone(), "dd-MM-yy");
     let gross = Number(row[12]) || 0; let tolls = Number(row[10]) || 0; let cash = Number(row[11]) || 0;
     let pay = (gross - tolls) * (finalRates[name] || 0.90);
 
     if (!drivers[name]) drivers[name] = { dates: {}, totalTrips: 0, totalPay: 0, totalTolls: 0, totalTotal: 0, totalCash: 0 };
-    if (!drivers[name].dates[dateStr]) drivers[name].dates[dateStr] = { count: 0, pay: 0, tolls: 0, total: 0 };
+    if (!drivers[name].dates[isoDateStr]) drivers[name].dates[isoDateStr] = { displayDate: displayDateStr, count: 0, pay: 0, tolls: 0, total: 0 };
 
-    let d = drivers[name].dates[dateStr];
+    let d = drivers[name].dates[isoDateStr];
     d.count += 1; d.pay += pay; d.tolls += tolls; d.total += (pay + tolls);
     drivers[name].totalTrips += 1; drivers[name].totalPay += pay; drivers[name].totalTolls += tolls;
     drivers[name].totalTotal += (pay + tolls); drivers[name].totalCash += cash;
@@ -610,9 +637,9 @@ function runCompletePayroll() {
     summaryRange.setBorder(false, false, true, false, false, false, BORDER_BLUE, SpreadsheetApp.BorderStyle.SOLID);
     currentRow++;
 
-    Object.keys(d.dates).sort().forEach(date => {
-      let day = d.dates[date];
-      paySheet.getRange(currentRow, 2, 1, 5).setValues([[date, day.count, day.pay, day.tolls, day.total]]);
+    Object.keys(d.dates).sort().forEach(isoDate => {
+      let day = d.dates[isoDate];
+      paySheet.getRange(currentRow, 2, 1, 5).setValues([[day.displayDate, day.count, day.pay, day.tolls, day.total]]);
       paySheet.getRange(currentRow, 2).setHorizontalAlignment("right");
       currentRow++;
     });
@@ -640,7 +667,7 @@ function runCompletePayroll() {
             String(item.desc).toLowerCase().includes("late") ? "Penalty: Late Arrival" :
               String(item.desc).toLowerCase().includes("no show") ? "Penalty: No Show" :
                 String(item.desc).replace(/TRIP ID/gi, "").replace(/ for \d+/gi, "").replace(/\b\d{5,}\b/g, "").replace(/\s+/g, " ").trim();
-        let dateSuffix = (item.date && !isNaN(new Date(item.date).getTime())) ? " " + Utilities.formatDate(new Date(item.date), ss.getSpreadsheetTimeZone(), "dd-MM") : "";
+        let dateSuffix = (item.date && !isNaN(new Date(item.date).getTime())) ? " " + Utilities.formatDate(parseTripDate(item.date, ss.getSpreadsheetTimeZone()) || new Date(item.date), ss.getSpreadsheetTimeZone(), "dd-MM") : "";
         paySheet.getRange(currentRow, 4).setValue((item.amount < 0 ? "Sub: " : "Add: ") + cleanDesc + dateSuffix);
         paySheet.getRange(currentRow, 6).setValue(item.amount);
         debitSum += Number(item.amount);
@@ -692,8 +719,7 @@ function runCompletePayroll() {
           if (actualDeduct > 0) {
             let dStr = "";
             if (loan.date && !isNaN(new Date(loan.date).getTime())) {
-              let origDate = new Date(loan.date);
-              origDate.setHours(origDate.getHours() + 12);
+              let origDate = parseTripDate(loan.date, ss.getSpreadsheetTimeZone()) || new Date(loan.date);
               dStr = " (" + Utilities.formatDate(origDate, ss.getSpreadsheetTimeZone(), "MM/dd/yy") + ")";
             }
             paySheet.getRange(currentRow, 4).setValue("Sub: Loan Repayment" + dStr);
