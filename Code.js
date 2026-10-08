@@ -194,7 +194,7 @@ function setupInitialSheets() {
     }
   }
 
-  let isAlreadyUpdated = localSettingsSheet.getRange("O1").getValue() === "DB_UPDATED";
+  let isAlreadyUpdated = localSettingsSheet.getRange("P1").getValue() === "DB_UPDATED" || localSettingsSheet.getRange("O1").getValue() === "DB_UPDATED";
 
   // --- 5. FETCH MASTER DB (PROMOS & LOANS) ---
   let masterDB = getMasterDatabase();
@@ -349,12 +349,12 @@ function setupInitialSheets() {
     let maxLoanIntended = activeLoans[driver] || 0;
     let predictedLoanDeduction = Math.min(maxLoanIntended, Math.max(0, actualAvailableFunds));
 
-    let dashboardDriverBalance = basicBalance + additionalPay - predictedLoanDeduction; // Dashboard Math
+    let dashboardDriverBalance = basicBalance + debits + additionalPay - predictedLoanDeduction; // Dashboard Math
     let companyFee = driverInfo[driver].gross - driverTotal;
 
     output.push([
       driver, driverInfo[driver].gross, driverInfo[driver].tolls, driverInfo[driver].net,
-      sysRate, driverPay, driverTotal, driverInfo[driver].cash, additionalPayDisplay, predictedLoanDeduction,
+      sysRate, driverPay, driverTotal, driverInfo[driver].cash, debits, additionalPayDisplay, predictedLoanDeduction,
       dashboardDriverBalance, companyFee, promoDisplay, override
     ]);
   }
@@ -367,18 +367,18 @@ function setupInitialSheets() {
     masterSetSheet.getRange(2, 1, masterData.length, 6).setValues(masterData);
 
     if (updatedMaster) {
-      localSettingsSheet.getRange("O1").setValue("DB_UPDATED").setFontColor("white");
+      localSettingsSheet.getRange("P1").setValue("DB_UPDATED").setFontColor("white");
       updateMessage += `\n\n(Master Database has been securely stamped with Saturday's date: ${stampString}).`;
     }
   }
 
   // --- 8. FORMATTING THE PROFESSIONAL DASHBOARD ---
   output.sort((a, b) => a[0].localeCompare(b[0]));
-  localSettingsSheet.getRange("A:N").clearContent().clearFormat();
+  localSettingsSheet.getRange("A:O").clearContent().clearFormat();
 
-  let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Refunds / Additions", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
+  let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Credits & Debits", "Refunds / Additions", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
 
-  let headerRange = localSettingsSheet.getRange("A1:N1");
+  let headerRange = localSettingsSheet.getRange("A1:O1");
   headerRange.setValues([newHeaders])
     .setFontWeight("bold").setBackground("#4a86e8").setFontColor("white")
     .setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
@@ -386,29 +386,29 @@ function setupInitialSheets() {
   localSettingsSheet.setRowHeight(1, 40);
 
   if (output.length > 0) {
-    let dataRange = localSettingsSheet.getRange(2, 1, output.length, 14);
+    let dataRange = localSettingsSheet.getRange(2, 1, output.length, 15);
     dataRange.setValues(output);
     dataRange.setVerticalAlignment("middle");
 
-    let fullTableRange = localSettingsSheet.getRange(1, 1, output.length + 1, 14);
+    let fullTableRange = localSettingsSheet.getRange(1, 1, output.length + 1, 15);
     fullTableRange.setBorder(true, true, true, true, true, true, "#b7b7b7", SpreadsheetApp.BorderStyle.SOLID);
 
     for (let i = 0; i < output.length; i++) {
-      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 14).setBackground("#f3f3f3");
+      if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 15).setBackground("#f3f3f3");
     }
 
     localSettingsSheet.getRange(2, 2, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-    localSettingsSheet.getRange(2, 6, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-    localSettingsSheet.getRange(2, 9, output.length, 1).setBackground("#FFF2CC").setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-    localSettingsSheet.getRange(2, 10, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 6, output.length, 4).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 10, output.length, 1).setBackground("#FFF2CC").setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(2, 11, output.length, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
     localSettingsSheet.getRange(2, 1, output.length, 1).setHorizontalAlignment("left");
     localSettingsSheet.getRange(2, 5, output.length, 1).setNumberFormat("0.00%").setHorizontalAlignment("center");
-    localSettingsSheet.getRange(2, 13, output.length, 1).setHorizontalAlignment("center");
-    localSettingsSheet.getRange(2, 14, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
+    localSettingsSheet.getRange(2, 14, output.length, 1).setHorizontalAlignment("center");
+    localSettingsSheet.getRange(2, 15, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
   }
 
-  localSettingsSheet.autoResizeColumns(1, 14);
-  for (let c = 1; c <= 14; c++) {
+  localSettingsSheet.autoResizeColumns(1, 15);
+  for (let c = 1; c <= 15; c++) {
     localSettingsSheet.setColumnWidth(c, localSettingsSheet.getColumnWidth(c) + 20);
   }
 
