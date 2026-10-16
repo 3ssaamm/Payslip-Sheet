@@ -78,6 +78,225 @@ function getSaturdayOfDate(d) {
 }
 
 /**
+ * Helper: Parses flexible date strings (e.g. 10/5/2026, 2026-10-05) into a normalized Date object at noon.
+ */
+function parseFlexibleDate(str) {
+  if (!str) return null;
+  str = String(str).trim();
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m) {
+    let month = Number(m[1]);
+    let day = Number(m[2]);
+    let year = Number(m[3]);
+    if (year < 100) year += 2000;
+    return new Date(year, month - 1, day, 12, 0, 0, 0);
+  }
+  let mIso = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (mIso) {
+    return new Date(Number(mIso[1]), Number(mIso[2]) - 1, Number(mIso[3]), 12, 0, 0, 0);
+  }
+  let d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Helper: Parses pay period text like "Period: 10/5/2026 – 10/11/2026"
+ */
+function parsePayPeriodText(cellText) {
+  if (!cellText) return null;
+  let match = cellText.match(/(\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4})\s*[\s\-\u2013\u2014to]+\s*(\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4})/i);
+  if (match) {
+    let s = parseFlexibleDate(match[1]);
+    let e = parseFlexibleDate(match[2]);
+    return { start: s, end: e, raw: cellText };
+  }
+  return null;
+}
+
+/**
+ * Helper: Computes the Saturday stamp date for promo/loan tracking from period end date
+ */
+function getSaturdayStamp(endDate, timeZone) {
+  let tz = timeZone || SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  let dayOfWeek = endDate.getDay();
+  let daysToSunday = (7 - dayOfWeek) % 7;
+  let endOfWeekSunday = new Date(endDate);
+  endOfWeekSunday.setDate(endDate.getDate() + daysToSunday);
+
+  let stampDate = new Date(endOfWeekSunday);
+  stampDate.setDate(endOfWeekSunday.getDate() + 6);
+  stampDate.setHours(0, 0, 0, 0);
+
+  let stampString = Utilities.formatDate(stampDate, tz, "MM/dd/yyyy");
+  return { stampDate, stampString };
+}
+
+/**
+ * Helper: Locates the payables summary sheet
+ */
+function findPayablesSheet(ss) {
+  let named = ss.getSheetByName("AYOAH GO Drivers — payables");
+  if (named) return named;
+
+  for (let s of ss.getSheets()) {
+    let n = s.getName().toLowerCase();
+    if (n.includes("payable") || n.includes("driver") || n.includes("ayoah")) {
+      return s;
+    }
+  }
+
+  let active = ss.getActiveSheet();
+  if (active && !["Advances", "Settings", "PaySlip"].includes(active.getName())) {
+    return active;
+  }
+
+  for (let s of ss.getSheets()) {
+    if (!["Advances", "Settings", "PaySlip"].includes(s.getName())) {
+      return s;
+    }
+  }
+  return ss.getSheets()[0];
+}
+
+/**
+ * Helper: Validates whether a sheet has the payables table structure
+ */
+function isPayablesSheet(sheet) {
+  if (!sheet) return false;
+  let lastRow = Math.min(sheet.getLastRow(), 10);
+  let lastCol = Math.min(sheet.getLastColumn(), 12);
+  if (lastRow < 3) return false;
+
+  let sample = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  for (let r = 0; r < sample.length; r++) {
+    let rowStr = sample[r].map(c => String(c || "").trim().toLowerCase()).join(" ");
+    if (rowStr.includes("driver net") || (rowStr.includes("trips") && rowStr.includes("toll")) || rowStr.includes("period:")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Helper: Parses the summary payables sheet
+ */
+function parsePayablesSheet(sheet, tz) {
+  let lastRow = sheet.getLastRow();
+  let lastCol = Math.max(sheet.getLastColumn(), 10);
+  if (lastRow < 5) return null;
+
+  let allValues = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+
+  // 1. Pay Period
+  let period = null;
+  for (let r = 0; r < Math.min(allValues.length, 5); r++) {
+    for (let c = 0; c < (allValues[r] || []).length; c++) {
+      let cellText = String(allValues[r][c] || "").trim();
+      if (/period[:\s]/i.test(cellText)) {
+        let p = parsePayPeriodText(cellText);
+        if (p) { period = p; break; }
+      }
+    }
+    if (period) break;
+  }
+
+  // 2. Saturday stamp
+  let stampDate = null;
+  let stampString = "";
+  if (period && period.end) {
+    let sat = getSaturdayStamp(period.end, tz);
+    stampDate = sat.stampDate;
+    stampString = sat.stampString;
+  }
+
+  // 3. Header row detection
+  let headerRowIdx = -1;
+  let colMap = {
+    driverId: -1, name: -1, trips: -1, driverNet: -1,
+    fees: -1, tollways: -1, credits: -1, debits: -1,
+    finalPay: -1, cash: -1
+  };
+
+  for (let r = 0; r < Math.min(allValues.length, 10); r++) {
+    let row = (allValues[r] || []).map(cell => String(cell || "").trim().toLowerCase());
+    if (row.includes("driver id") || (row.includes("name") && (row.includes("driver net") || row.includes("trips")))) {
+      headerRowIdx = r;
+      row.forEach((h, idx) => {
+        if (h === "driver id") colMap.driverId = idx;
+        else if (h === "name" || h === "driver name") colMap.name = idx;
+        else if (h === "trips" || h === "num of trips") colMap.trips = idx;
+        else if (h === "driver net" || h === "net") colMap.driverNet = idx;
+        else if (h === "fees" || h === "fee") colMap.fees = idx;
+        else if (h.includes("toll")) colMap.tollways = idx;
+        else if (h === "credits" || h === "credit") colMap.credits = idx;
+        else if (h === "debits" || h === "debit") colMap.debits = idx;
+        else if (h.includes("final pay")) colMap.finalPay = idx;
+        else if (h === "cash" || h.includes("cash")) colMap.cash = idx;
+      });
+      break;
+    }
+  }
+
+  // Fallbacks based on standard column layout (Cols A-J)
+  if (colMap.driverId === -1) colMap.driverId = 0;
+  if (colMap.name === -1) colMap.name = 1;
+  if (colMap.trips === -1) colMap.trips = 2;
+  if (colMap.driverNet === -1) colMap.driverNet = 3;
+  if (colMap.fees === -1) colMap.fees = 4;
+  if (colMap.tollways === -1) colMap.tollways = 5;
+  if (colMap.credits === -1) colMap.credits = 6;
+  if (colMap.debits === -1) colMap.debits = 7;
+  if (colMap.finalPay === -1) colMap.finalPay = 8;
+  if (colMap.cash === -1) colMap.cash = 9;
+
+  let driverInfo = {};
+  let driverDebits = {};
+
+  let startRow = headerRowIdx !== -1 ? headerRowIdx + 1 : 4;
+  for (let r = startRow; r < allValues.length; r++) {
+    let row = allValues[r] || [];
+    let driverName = String(row[colMap.name] || "").trim();
+    if (!driverName) {
+      let idCheck = String(row[colMap.driverId] || "").trim();
+      if (idCheck.toLowerCase().startsWith("total")) break;
+      continue;
+    }
+    if (driverName.toLowerCase() === "total" || driverName.toLowerCase().startsWith("total")) {
+      break;
+    }
+
+    let driverId = String(row[colMap.driverId] || "").trim();
+    let trips = Number(row[colMap.trips]) || 0;
+    let net = parseMoney(row[colMap.driverNet]);
+    let tolls = parseMoney(row[colMap.tollways]);
+    let credits = parseMoney(row[colMap.credits]);
+    let debits = parseMoney(row[colMap.debits]);
+    let cash = parseMoney(row[colMap.cash]);
+
+    let gross = net + tolls;
+    let netCreditsDebits = Math.abs(credits) - Math.abs(debits);
+
+    driverInfo[driverName] = {
+      id: driverId,
+      name: driverName,
+      trips: trips,
+      gross: gross,
+      tolls: tolls,
+      net: net,
+      cash: cash,
+      credits: credits,
+      debits: debits,
+      netCreditsDebits: netCreditsDebits,
+      earliestDate: period ? period.start : new Date()
+    };
+
+    driverDebits[driverName] = netCreditsDebits;
+  }
+
+  return { period, stampDate, stampString, driverInfo, driverDebits };
+}
+
+/**
  * Step 1: Creates the Local Dashboard AND Stamps the Master Database (Promos)!
  */
 function setupInitialSheets() {
@@ -100,60 +319,75 @@ function setupInitialSheets() {
     advSheet.setColumnWidth(1, 180); advSheet.setColumnWidth(2, 100); advSheet.setColumnWidth(3, 100);
   }
 
-  // --- 2. READ LOCAL TRIP INFO & FIND SATURDAY ---
-  const tripSheet = ss.getSheetByName("Trip Information");
-  if (!tripSheet || tripSheet.getLastRow() < 3) {
-    return SpreadsheetApp.getUi().alert("Advances created. Add trips to 'Trip Information' to generate Settings.");
-  }
-
-  const tripData = tripSheet.getRange(3, 1, tripSheet.getLastRow() - 2, 14).getValues();
+  // --- 2. DETECT DATA SOURCE & READ DRIVER INFO ---
   let driverInfo = {};
-  let maxTripTime = 0;
-
-  tripData.forEach(row => {
-    let driver = row[3];
-    if (!driver) return;
-
-    let gross = Number(row[12]) || 0;
-    let tolls = Number(row[10]) || 0;
-    let cash = Number(row[11]) || 0;
-    let net = gross - tolls;
-    let tDate = parseTripDate(row[4], ss.getSpreadsheetTimeZone());
-    if (!tDate) return;
-
-    if (!driverInfo[driver]) {
-      driverInfo[driver] = { gross: 0, tolls: 0, net: 0, cash: 0, earliestDate: tDate };
-    }
-
-    driverInfo[driver].gross += gross;
-    driverInfo[driver].tolls += tolls;
-    driverInfo[driver].net += net;
-    driverInfo[driver].cash += cash;
-
-    if (!isNaN(tDate.getTime())) {
-      if (tDate < driverInfo[driver].earliestDate) driverInfo[driver].earliestDate = tDate;
-      if (tDate.getTime() > maxTripTime) maxTripTime = tDate.getTime();
-    }
-  });
-
+  let driverDebits = {};
   let stampDate = null;
   let stampString = "";
-  if (maxTripTime > 0) {
-    let maxTripDate = new Date(maxTripTime);
-    let dayOfWeek = maxTripDate.getDay();
-    let daysToSunday = (7 - dayOfWeek) % 7;
-    let endOfWeekSunday = new Date(maxTripDate);
-    endOfWeekSunday.setDate(maxTripDate.getDate() + daysToSunday);
+  const tz = ss.getSpreadsheetTimeZone();
 
-    stampDate = new Date(endOfWeekSunday);
-    stampDate.setDate(endOfWeekSunday.getDate() + 6);
-    stampString = Utilities.formatDate(stampDate, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
+  const payablesSheet = findPayablesSheet(ss);
+  const tripSheet = ss.getSheetByName("Trip Information");
+
+  if (payablesSheet && isPayablesSheet(payablesSheet)) {
+    let parsedData = parsePayablesSheet(payablesSheet, tz);
+    if (!parsedData || Object.keys(parsedData.driverInfo).length === 0) {
+      return SpreadsheetApp.getUi().alert("Error: Found payables sheet '" + payablesSheet.getName() + "', but could not parse driver rows. Please check headers and data.");
+    }
+    driverInfo = parsedData.driverInfo;
+    driverDebits = parsedData.driverDebits;
+    stampDate = parsedData.stampDate;
+    stampString = parsedData.stampString;
+  } else if (tripSheet && tripSheet.getLastRow() >= 3) {
+    // Legacy Trip Information parsing
+    const tripData = tripSheet.getRange(3, 1, tripSheet.getLastRow() - 2, 14).getValues();
+    let maxTripTime = 0;
+
+    tripData.forEach(row => {
+      let driver = row[3];
+      if (!driver) return;
+
+      let gross = Number(row[12]) || 0;
+      let tolls = Number(row[10]) || 0;
+      let cash = Number(row[11]) || 0;
+      let net = gross - tolls;
+      let tDate = parseTripDate(row[4], tz);
+      if (!tDate) return;
+
+      if (!driverInfo[driver]) {
+        driverInfo[driver] = { gross: 0, tolls: 0, net: 0, cash: 0, earliestDate: tDate };
+      }
+
+      driverInfo[driver].gross += gross;
+      driverInfo[driver].tolls += tolls;
+      driverInfo[driver].net += net;
+      driverInfo[driver].cash += cash;
+
+      if (!isNaN(tDate.getTime())) {
+        if (tDate < driverInfo[driver].earliestDate) driverInfo[driver].earliestDate = tDate;
+        if (tDate.getTime() > maxTripTime) maxTripTime = tDate.getTime();
+      }
+    });
+
+    if (maxTripTime > 0) {
+      let maxTripDate = new Date(maxTripTime);
+      let dayOfWeek = maxTripDate.getDay();
+      let daysToSunday = (7 - dayOfWeek) % 7;
+      let endOfWeekSunday = new Date(maxTripDate);
+      endOfWeekSunday.setDate(maxTripDate.getDate() + daysToSunday);
+
+      stampDate = new Date(endOfWeekSunday);
+      stampDate.setDate(endOfWeekSunday.getDate() + 6);
+      stampString = Utilities.formatDate(stampDate, tz, "MM/dd/yyyy");
+    }
+  } else {
+    return SpreadsheetApp.getUi().alert("Advances created. Could not find 'AYOAH GO Drivers — payables' or 'Trip Information' with data.");
   }
 
   // --- 3. LOAD ADVANCES AND DEBITS (For Dashboard Prediction Accuracy) ---
-  let driverDebits = {};
   const creditSheet = ss.getSheetByName("Credits & Debits Breakdown") || ss.getSheetByName("Credits & Debits");
   if (creditSheet && creditSheet.getLastRow() >= 3) {
+    driverDebits = {};
     creditSheet.getRange(3, 1, creditSheet.getLastRow() - 2, 6).getValues().forEach(row => {
       if (row[1] && row[3] != 0) {
         if (!driverDebits[row[1]]) driverDebits[row[1]] = 0;
@@ -452,10 +686,13 @@ function runCompletePayroll() {
   // PART A: FILL TRIP COLUMNS & FIND SATURDAY
   // ==========================================
   const tripSheet = ss.getSheetByName("Trip Information");
-  if (!tripSheet) return SpreadsheetApp.getUi().alert("Error: 'Trip Information' sheet not found.");
-
-  const lastRow = tripSheet.getLastRow();
-  if (lastRow < 3) return;
+  if (!tripSheet || tripSheet.getLastRow() < 3) {
+    const payablesSheet = findPayablesSheet(ss);
+    if (payablesSheet && isPayablesSheet(payablesSheet)) {
+      return SpreadsheetApp.getUi().alert("Settings & Advances are ready!\n\nStep 2 (Payslip generation with Daily Balance) will be enabled in the next update as planned.");
+    }
+    return SpreadsheetApp.getUi().alert("Error: 'Trip Information' sheet not found.");
+  }
 
   const tripData = tripSheet.getRange(3, 1, lastRow - 2, 14).getValues();
 
