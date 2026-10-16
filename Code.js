@@ -267,13 +267,22 @@ function parsePayablesSheet(sheet, tz) {
 
     let driverId = String(row[colMap.driverId] || "").trim();
     let trips = Number(row[colMap.trips]) || 0;
-    let net = parseMoney(row[colMap.driverNet]);
+    let netFromCol = parseMoney(row[colMap.driverNet]);
+    let fees = parseMoney(row[colMap.fees]);
     let tolls = parseMoney(row[colMap.tollways]);
     let credits = parseMoney(row[colMap.credits]);
     let debits = parseMoney(row[colMap.debits]);
+    let finalPay = parseMoney(row[colMap.finalPay]);
     let cash = parseMoney(row[colMap.cash]);
 
-    let gross = net + tolls;
+    // Gross fare calculation requested by user:
+    // "Gross fare in the new sheet is actually not included, you have to calculate it by adding Cash, Final Pay and Fees amounts together."
+    let gross = cash + finalPay + Math.abs(fees);
+    if (gross === 0 && netFromCol > 0) {
+      gross = netFromCol + tolls;
+    }
+    // Price no Toll = Gross Fare - Tolls
+    let net = gross - tolls;
     let netCreditsDebits = Math.abs(credits) - Math.abs(debits);
 
     driverInfo[driverName] = {
@@ -324,6 +333,7 @@ function setupInitialSheets() {
   let driverDebits = {};
   let stampDate = null;
   let stampString = "";
+  let period = null;
   const tz = ss.getSpreadsheetTimeZone();
 
   const payablesSheet = findPayablesSheet(ss);
@@ -338,6 +348,7 @@ function setupInitialSheets() {
     driverDebits = parsedData.driverDebits;
     stampDate = parsedData.stampDate;
     stampString = parsedData.stampString;
+    period = parsedData.period;
   } else if (tripSheet && tripSheet.getLastRow() >= 3) {
     // Legacy Trip Information parsing
     const tripData = tripSheet.getRange(3, 1, tripSheet.getLastRow() - 2, 14).getValues();
@@ -428,8 +439,6 @@ function setupInitialSheets() {
     }
   }
 
-  let isAlreadyUpdated = localSettingsSheet.getRange("P1").getValue() === "DB_UPDATED" || localSettingsSheet.getRange("O1").getValue() === "DB_UPDATED";
-
   // --- 5. FETCH MASTER DB (PROMOS & LOANS) ---
   let masterDB = getMasterDatabase();
   if (!masterDB) return;
@@ -442,7 +451,50 @@ function setupInitialSheets() {
     masterData = masterSetSheet.getRange(2, 1, masterSetSheet.getLastRow() - 1, 6).getValues();
   }
   let masterIndexMap = {};
-  masterData.forEach((r, i) => { masterIndexMap[String(r[0])] = i; });
+  masterData.forEach((r, i) => {
+    let key = String(r[0] || "").trim().toLowerCase();
+    if (key) masterIndexMap[key] = i;
+  });
+
+  // --- 5B. VALIDATE THAT ALL DRIVERS HAVE A STARTING DATE IN MASTER DB ---
+  let driversMissingStartDate = [];
+  let newDriversAdded = false;
+
+  for (let driver in driverInfo) {
+    let key = String(driver).trim().toLowerCase();
+    if (masterIndexMap[key] === undefined) {
+      masterData.push([String(driver).trim(), "", "", "", "", ""]);
+      masterIndexMap[key] = masterData.length - 1;
+      newDriversAdded = true;
+    }
+
+    let mRowIdx = masterIndexMap[key];
+    let mRow = masterData[mRowIdx];
+    let mStartDateVal = mRow[1];
+    let parsedStartDate = parseFlexibleDate(mStartDateVal) || parseTripDate(mStartDateVal, tz);
+
+    if (!parsedStartDate || isNaN(parsedStartDate.getTime())) {
+      driversMissingStartDate.push(driver);
+    }
+  }
+
+  // If new drivers were added to Master DB array, write them back so user sees their rows ready for start dates
+  if (newDriversAdded) {
+    masterSetSheet.getRange(2, 1, Math.max(masterSetSheet.getLastRow() - 1, 1), 6).clearContent();
+    masterSetSheet.getRange(2, 1, masterData.length, 6).setValues(masterData);
+  }
+
+  // If ANY driver is missing a starting date, HALT and do NOT create the Settings dashboard!
+  if (driversMissingStartDate.length > 0) {
+    let missingListStr = driversMissingStartDate.map(d => "  • " + d).join("\n");
+    let msg = "⚠️ SETUP PAUSED: Missing Starting Dates!\n\n" +
+      "The Settings dashboard cannot be generated until ALL drivers have a valid starting date in the Master Database.\n\n" +
+      "Missing starting dates for " + driversMissingStartDate.length + " driver(s):\n" +
+      missingListStr + "\n\n" +
+      "👉 Please open the Master Database 'Settings' sheet, enter their starting date in Column B (e.g. MM/DD/YYYY), and click 'Setup Advances & Local Settings' again.";
+    SpreadsheetApp.getUi().alert(msg);
+    return;
+  }
 
   let masterLoanSheet = masterDB.getSheetByName("Loans");
   if (!masterLoanSheet) return SpreadsheetApp.getUi().alert("Error: 'Loans' sheet missing in Master Database!");
@@ -492,31 +544,27 @@ function setupInitialSheets() {
   let output = [];
   let updatedMaster = false;
 
+  let periodEndObj = (period && period.end) ? new Date(period.end) : (stampDate ? new Date(stampDate) : new Date());
+  periodEndObj.setHours(23, 59, 59, 999);
+
   for (let driver in driverInfo) {
-    let stringDriver = String(driver);
-
-    if (masterIndexMap[stringDriver] === undefined) {
-      masterData.push([stringDriver, "", "", "", "", ""]);
-      masterIndexMap[stringDriver] = masterData.length - 1;
-    }
-
-    let mRowIdx = masterIndexMap[stringDriver];
+    let key = String(driver).trim().toLowerCase();
+    let mRowIdx = masterIndexMap[key];
     let mRow = masterData[mRowIdx];
-    let mStartDate = mRow[1];
-
-    let isValidStart = false;
-    if (mStartDate instanceof Date) isValidStart = true;
-    else if (mStartDate && !isNaN(new Date(mStartDate).getTime())) isValidStart = true;
+    let mStartDateVal = mRow[1];
+    let startObj = parseFlexibleDate(mStartDateVal) || parseTripDate(mStartDateVal, tz);
+    if (startObj) startObj.setHours(0, 0, 0, 0);
 
     let used = 0;
     let alreadyStampedThisWeek = false;
 
     for (let col = 2; col <= 5; col++) {
-      if (mRow[col] && String(mRow[col]).trim() !== "") {
+      let cellVal = mRow[col];
+      if (cellVal && String(cellVal).trim() !== "") {
         used++;
-        let existingDate = new Date(mRow[col]);
-        if (!isNaN(existingDate.getTime())) {
-          let existingStr = Utilities.formatDate(existingDate, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
+        let d = parseFlexibleDate(cellVal) || parseTripDate(cellVal, tz);
+        if (d && !isNaN(d.getTime())) {
+          let existingStr = Utilities.formatDate(d, tz, "MM/dd/yyyy");
           if (existingStr === stampString) alreadyStampedThisWeek = true;
         }
       }
@@ -525,26 +573,22 @@ function setupInitialSheets() {
     let isActivePromo = false;
     let currentWeekNumber = 0;
 
-    if (isValidStart) {
-      let startObj = new Date(mStartDate); startObj.setHours(0, 0, 0, 0);
-      let earliestObj = new Date(driverInfo[driver].earliestDate); earliestObj.setHours(0, 0, 0, 0);
+    // Driver is eligible for promo if their start date is on or before pay period end
+    if (startObj && startObj.getTime() <= periodEndObj.getTime()) {
+      if (alreadyStampedThisWeek) {
+        isActivePromo = true;
+        currentWeekNumber = used;
+      } else if (used < 4) {
+        isActivePromo = true;
+        currentWeekNumber = used + 1;
 
-      if (earliestObj >= startObj) {
-        if (alreadyStampedThisWeek) {
-          isActivePromo = true;
-          currentWeekNumber = used;
-        } else if (used < 4) {
-          isActivePromo = true;
-          currentWeekNumber = used + 1;
-
-          // PROMO STAMP ACTION 
-          if (!isAlreadyUpdated && stampDate) {
-            for (let col = 2; col <= 5; col++) {
-              if (!mRow[col] || String(mRow[col]).trim() === "") {
-                mRow[col] = stampDate;
-                updatedMaster = true;
-                break;
-              }
+        // Stamp promo date in Master DB for this week
+        if (stampDate) {
+          for (let col = 2; col <= 5; col++) {
+            if (!mRow[col] || String(mRow[col]).trim() === "") {
+              mRow[col] = stampDate;
+              updatedMaster = true;
+              break;
             }
           }
         }
