@@ -132,6 +132,22 @@ function getSaturdayStamp(endDate, timeZone) {
 }
 
 /**
+ * Helper: Computes the date of 2 Mondays before a given Saturday payment date
+ */
+function getTwoMondaysBefore(date) {
+  let d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  let mondaysFound = 0;
+  while (mondaysFound < 2) {
+    d.setDate(d.getDate() - 1);
+    if (d.getDay() === 1) { // 1 is Monday
+      mondaysFound++;
+    }
+  }
+  return d;
+}
+
+/**
  * Helper: Locates the payables summary sheet
  */
 function findPayablesSheet(ss) {
@@ -546,6 +562,7 @@ function setupInitialSheets() {
 
   let periodEndObj = (period && period.end) ? new Date(period.end) : (stampDate ? new Date(stampDate) : new Date());
   periodEndObj.setHours(23, 59, 59, 999);
+  let twoMondaysBefore = stampDate ? getTwoMondaysBefore(stampDate) : null;
 
   for (let driver in driverInfo) {
     let key = String(driver).trim().toLowerCase();
@@ -555,17 +572,22 @@ function setupInitialSheets() {
     let startObj = parseFlexibleDate(mStartDateVal) || parseTripDate(mStartDateVal, tz);
     if (startObj) startObj.setHours(0, 0, 0, 0);
 
-    let used = 0;
+    let priorPaymentsCount = 0;
     let alreadyStampedThisWeek = false;
+    let thisWeekCol = -1;
 
     for (let col = 2; col <= 5; col++) {
       let cellVal = mRow[col];
       if (cellVal && String(cellVal).trim() !== "") {
-        used++;
         let d = parseFlexibleDate(cellVal) || parseTripDate(cellVal, tz);
         if (d && !isNaN(d.getTime())) {
           let existingStr = Utilities.formatDate(d, tz, "MM/dd/yyyy");
-          if (existingStr === stampString) alreadyStampedThisWeek = true;
+          if (existingStr === stampString) {
+            alreadyStampedThisWeek = true;
+            thisWeekCol = col;
+          } else {
+            priorPaymentsCount++;
+          }
         }
       }
     }
@@ -573,17 +595,20 @@ function setupInitialSheets() {
     let isActivePromo = false;
     let currentWeekNumber = 0;
 
-    // Driver is eligible for promo if their start date is on or before pay period end
-    if (startObj && startObj.getTime() <= periodEndObj.getTime()) {
-      if (alreadyStampedThisWeek) {
-        isActivePromo = true;
-        currentWeekNumber = used;
-      } else if (used < 4) {
-        isActivePromo = true;
-        currentWeekNumber = used + 1;
+    // Rule:
+    // If starting date is more than 2 Mondays before the payment date (e.g. before Oct 5 for Oct 17 payment),
+    // the driver is considered (None/Expired) and cannot get into the promo.
+    // Also, promos are capped at 4 payments and expire within 35 days (5 weeks) from starting date.
+    let daysSinceStart = (startObj && stampDate) ? Math.round((stampDate.getTime() - startObj.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+    let isWithinPromoWindow = (daysSinceStart >= 0 && daysSinceStart <= 35);
 
-        // Stamp promo date in Master DB for this week
-        if (stampDate) {
+    if (priorPaymentsCount === 0) {
+      // Driver has not yet received a promo payment: to get INTO the promo, start date must be on or after 2 Mondays before payment date
+      if (startObj && twoMondaysBefore && startObj.getTime() >= twoMondaysBefore.getTime() && startObj.getTime() <= periodEndObj.getTime()) {
+        isActivePromo = true;
+        currentWeekNumber = 1;
+
+        if (!alreadyStampedThisWeek && stampDate) {
           for (let col = 2; col <= 5; col++) {
             if (!mRow[col] || String(mRow[col]).trim() === "") {
               mRow[col] = stampDate;
@@ -592,6 +617,35 @@ function setupInitialSheets() {
             }
           }
         }
+      } else {
+        // Start date is before 2 Mondays before payment date: CANNOT GET INTO PROMO!
+        isActivePromo = false;
+        // If mistakenly stamped for this week earlier, erase it from Master DB!
+        if (alreadyStampedThisWeek && thisWeekCol !== -1) {
+          mRow[thisWeekCol] = "";
+          updatedMaster = true;
+        }
+      }
+    } else if (priorPaymentsCount < 4 && isWithinPromoWindow) {
+      // Driver is continuing an active 4-week promo
+      isActivePromo = true;
+      currentWeekNumber = priorPaymentsCount + 1;
+
+      if (!alreadyStampedThisWeek && stampDate) {
+        for (let col = 2; col <= 5; col++) {
+          if (!mRow[col] || String(mRow[col]).trim() === "") {
+            mRow[col] = stampDate;
+            updatedMaster = true;
+            break;
+          }
+        }
+      }
+    } else {
+      // Expired promo or all 4 payments already used
+      isActivePromo = false;
+      if (alreadyStampedThisWeek && !isWithinPromoWindow && thisWeekCol !== -1) {
+        mRow[thisWeekCol] = "";
+        updatedMaster = true;
       }
     }
 
