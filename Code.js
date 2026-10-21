@@ -4,6 +4,8 @@
 // ==========================================
 const MASTER_DB_URL = "https://docs.google.com/spreadsheets/d/1RJ-4CCGSqYm7fAM5XkQ8rFDzKyZOiADf-H8_OX8DxJI/edit";
 const DAILY_BALANCE_BASE_FOLDER_ID = "1iDd2ME2b6coX8GO6Dkom5u9jldkRSwVg";
+// Optional: Paste direct URL to the monthly Drivers Daily Balance sheet (e.g. October) to guarantee 100% direct access:
+const MONTHLY_BALANCE_FILE_URL = "";
 
 /**
  * Standard menu creation function.
@@ -15,6 +17,8 @@ function onOpen() {
     .addItem('1. Setup Advances & Local Settings', 'setupInitialSheets')
     .addSeparator()
     .addItem('2. Generate Payslip', 'runCompletePayroll')
+    .addSeparator()
+    .addItem('🔍 3. Diagnose Daily Balance File', 'diagnoseDailyBalanceConnection')
     .addToUi();
 }
 
@@ -85,17 +89,26 @@ function parseFlexibleDate(str) {
   if (!str) return null;
   if (str instanceof Date && !isNaN(str.getTime())) return str;
   str = String(str).trim();
-  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-  if (m) {
-    let month = Number(m[1]);
-    let day = Number(m[2]);
-    let year = Number(m[3]);
-    if (year < 100) year += 2000;
-    return new Date(year, month - 1, day, 12, 0, 0, 0);
-  }
   let mIso = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
   if (mIso) {
     return new Date(Number(mIso[1]), Number(mIso[2]) - 1, Number(mIso[3]), 12, 0, 0, 0);
+  }
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m) {
+    let n1 = Number(m[1]);
+    let n2 = Number(m[2]);
+    let year = Number(m[3]);
+    if (year < 100) year += 2000;
+    let month, day;
+    if (n1 > 12) {
+      day = n1; month = n2;
+    } else if (n2 > 12) {
+      month = n1; day = n2;
+    } else {
+      // Standard US format default: MM-DD-YYYY or MM/DD/YYYY
+      month = n1; day = n2;
+    }
+    return new Date(year, month - 1, day, 12, 0, 0, 0);
   }
   let d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
@@ -773,53 +786,73 @@ function getDriverDailyMap(dailyBreakdown, driverName) {
 }
 
 /**
- * Helper: Parses and resolves daily dates from the Monthly sheet (handling "Thursday, 01", native Dates, ISO, etc.)
+ * Helper: Parses and resolves daily dates from the Monthly sheet (handling "Thursday, 01", "05-10-26", native Dates, ISO, etc.)
  */
-function resolveDailyDate(dateCell, targetYear, targetMonthIndex, tz) {
-  if (!dateCell) return null;
-  if (dateCell instanceof Date && !isNaN(dateCell.getTime())) {
-    if (dateCell.getFullYear() >= 2020) {
-      return dateCell;
+function resolveDailyDate(rawCell, displayCell, targetYear, targetMonthIndex, tz) {
+  let dayNum = null;
+  let str = String(displayCell || rawCell || '').trim();
+  if (!str) return null;
+
+  // Pattern 1: Day name + day number (e.g. 'Thursday, 01', 'Monday, 05', 'Sat, 10', 'Thursday, 1')
+  let mName = str.match(/(?:mon|tue|wed|thu|fri|sat|sun)?[a-z]*[,\s]+0?([1-9]|[12]\d|3[01])\b/i);
+  if (mName && mName[1]) {
+    dayNum = parseInt(mName[1], 10);
+  }
+
+  // Pattern 2: DD-MM-YYYY or DD/MM/YYYY or MM/DD/YYYY
+  if (!dayNum) {
+    let mDate = str.match(/^0?([1-9]|[12]\d|3[01])[\/\-]0?([1-9]|[12]\d|3[01])[\/\-](\d{2,4})/);
+    if (mDate) {
+      let n1 = parseInt(mDate[1], 10);
+      let n2 = parseInt(mDate[2], 10);
+      let targetMonthNum = targetMonthIndex + 1;
+      if (n2 === targetMonthNum) {
+        dayNum = n1; // DD-MM-YYYY
+      } else if (n1 === targetMonthNum) {
+        dayNum = n2; // MM-DD-YYYY
+      } else if (n1 > 12) {
+        dayNum = n1;
+      } else {
+        dayNum = n2;
+      }
+    }
+  }
+
+  // Pattern 3: Date object fallback
+  if (!dayNum && rawCell instanceof Date && !isNaN(rawCell.getTime())) {
+    if (rawCell.getMonth() === targetMonthIndex) {
+      dayNum = rawCell.getDate();
+    } else if (rawCell.getDate() === targetMonthIndex + 1) {
+      dayNum = rawCell.getMonth() + 1;
     } else {
-      return new Date(targetYear, targetMonthIndex, dateCell.getDate(), 12, 0, 0, 0);
+      dayNum = rawCell.getDate();
     }
   }
 
-  let str = String(dateCell).trim();
-  let fullDate = parseFlexibleDate(str) || parseTripDate(str, tz);
-  if (fullDate && fullDate.getFullYear() >= 2020) {
-    return fullDate;
+  // Pattern 4: Bare number (e.g. 1 to 31)
+  if (!dayNum) {
+    let mNum = str.match(/^0?([1-9]|[12]\d|3[01])$/);
+    if (mNum) dayNum = parseInt(mNum[1], 10);
   }
 
-  // Handle "Thursday, 01", "Monday, 05", "Wednesday, 7", etc.
-  let dayMatch = str.match(/(?:mon|tue|wed|thu|fri|sat|sun)?[a-z]*[,\s]+(\d{1,2})/i);
-  if (dayMatch) {
-    let dayNum = parseInt(dayMatch[1], 10);
-    if (dayNum >= 1 && dayNum <= 31) {
-      return new Date(targetYear, targetMonthIndex, dayNum, 12, 0, 0, 0);
-    }
+  if (dayNum != null && dayNum >= 1 && dayNum <= 31) {
+    return new Date(targetYear, targetMonthIndex, dayNum, 12, 0, 0, 0);
   }
-
   return null;
 }
 
+/**
 /**
  * Helper: Fetches the daily trip and price breakdown for each driver from Google Drive Daily Balance sheets.
  * Path structure: Base Folder (DAILY_BALANCE_BASE_FOLDER_ID) -> Year (e.g. 2026) -> Monthly Sheet (e.g. "October - Drivers Daily Balance") -> "Summary" tab
  */
 function fetchDailyBalanceBreakdown(period, tz) {
   let dailyBreakdown = {};
+  dailyBreakdown._meta = { filesFound: [], selectedFile: null, errors: [] };
+
   if (!period || !period.start || !period.end) {
     Logger.log("fetchDailyBalanceBreakdown: No valid period provided.");
-    return dailyBreakdown;
-  }
-
-  let baseFolder;
-  try {
-    baseFolder = DriveApp.getFolderById(DAILY_BALANCE_BASE_FOLDER_ID);
-  } catch (e) {
-    Logger.log("Error opening Daily Balance base folder: " + e.message);
-    SpreadsheetApp.getUi().alert("Note: Could not open Daily Balance folder on Google Drive (" + e.message + "). Payslip will be generated using summary data.");
+    dailyBreakdown._meta.errors.push("No valid pay period provided.");
     return dailyBreakdown;
   }
 
@@ -847,70 +880,144 @@ function fetchDailyBalanceBreakdown(period, tz) {
     cur.setDate(cur.getDate() + 1);
   }
 
-  for (let target of targets) {
-    let yearFolder = null;
-    let yearStr = String(target.year);
+  let pStartIso = Utilities.formatDate(period.start, tz, "yyyy-MM-dd");
+  let pEndIso = Utilities.formatDate(period.end, tz, "yyyy-MM-dd");
 
-    // 1. Find Year Folder
-    let yearFolders = baseFolder.getFoldersByName(yearStr);
-    if (yearFolders.hasNext()) {
-      yearFolder = yearFolders.next();
-    } else {
-      let allSubfolders = baseFolder.getFolders();
-      while (allSubfolders.hasNext()) {
-        let f = allSubfolders.next();
-        if (f.getName().includes(yearStr)) {
-          yearFolder = f;
-          break;
-        }
+  for (let target of targets) {
+    let dailySS = null;
+    let targetFileName = target.monthName + " - Drivers Daily Balance";
+
+    // 1. Direct URL takes absolute priority if configured
+    if (MONTHLY_BALANCE_FILE_URL && String(MONTHLY_BALANCE_FILE_URL).trim() !== "") {
+      try {
+        dailySS = SpreadsheetApp.openByUrl(String(MONTHLY_BALANCE_FILE_URL).trim());
+        dailyBreakdown._meta.selectedFile = {
+          name: dailySS.getName(),
+          id: dailySS.getId(),
+          source: "Direct URL (MONTHLY_BALANCE_FILE_URL)",
+          lastUpdated: "Active Sheet"
+        };
+      } catch (e) {
+        Logger.log("Error opening MONTHLY_BALANCE_FILE_URL: " + e.message);
+        dailyBreakdown._meta.errors.push("Could not open MONTHLY_BALANCE_FILE_URL: " + e.message);
       }
     }
 
-    if (!yearFolder) {
-      Logger.log("Year folder not found in Google Drive: " + yearStr);
-      continue;
-    }
+    // 2. Drive Folder Search if direct URL is not configured
+    if (!dailySS) {
+      let baseFolder;
+      try {
+        baseFolder = DriveApp.getFolderById(DAILY_BALANCE_BASE_FOLDER_ID);
+      } catch (e) {
+        let err = "Could not open Daily Balance base folder ID (" + DAILY_BALANCE_BASE_FOLDER_ID + "): " + e.message;
+        Logger.log(err);
+        dailyBreakdown._meta.errors.push(err);
+        continue;
+      }
 
-    // 2. Find Monthly Sheet File
-    let targetFileName = target.monthName + " - Drivers Daily Balance";
-    let fileIter = yearFolder.getFilesByName(targetFileName);
-    let targetFile = null;
+      let yearStr = String(target.year);
+      let yearFolder = null;
+      let yearFolders = baseFolder.getFoldersByName(yearStr);
+      if (yearFolders.hasNext()) {
+        yearFolder = yearFolders.next();
+      } else {
+        let allSubfolders = baseFolder.getFolders();
+        while (allSubfolders.hasNext()) {
+          let f = allSubfolders.next();
+          if (f.getName().includes(yearStr)) {
+            yearFolder = f;
+            break;
+          }
+        }
+      }
 
-    if (fileIter.hasNext()) {
-      targetFile = fileIter.next();
-    } else {
+      if (!yearFolder) {
+        let err = "Year folder '" + yearStr + "' not found in Google Drive folder.";
+        Logger.log(err);
+        dailyBreakdown._meta.errors.push(err);
+        continue;
+      }
+
+      // Collect ALL candidate files in year folder
+      let candidateFiles = [];
       let allFiles = yearFolder.getFiles();
       while (allFiles.hasNext()) {
         let f = allFiles.next();
-        let fname = f.getName().toLowerCase();
+        if (f.isTrashed()) continue;
+        let fname = f.getName().trim();
+        let fnameLower = fname.toLowerCase();
         let mLower = target.monthName.toLowerCase();
         let mShort = mLower.slice(0, 3);
-        if ((fname.includes(mLower) || fname.includes(mShort)) && (fname.includes("balance") || fname.includes("driver"))) {
-          targetFile = f;
-          break;
+
+        let isExact = (fnameLower === targetFileName.toLowerCase());
+        let isMonthlyBalance = (fnameLower.includes(mLower) || fnameLower.includes(mShort)) &&
+                               (fnameLower.includes("balance") || fnameLower.includes("daily"));
+        let isSingleDayFile = /\b(?:0?[1-9]|[12]\d|3[01])\b/.test(fnameLower) && !fnameLower.includes("drivers daily balance");
+
+        if (isExact) {
+          candidateFiles.push({ file: f, priority: 1, name: fname, updated: f.getLastUpdated() });
+        } else if (isMonthlyBalance && !isSingleDayFile) {
+          candidateFiles.push({ file: f, priority: 2, name: fname, updated: f.getLastUpdated() });
+        } else if (isMonthlyBalance) {
+          candidateFiles.push({ file: f, priority: 3, name: fname, updated: f.getLastUpdated() });
+        }
+      }
+
+      // Priority 1 (exact name) first, then newest lastUpdated timestamp first
+      candidateFiles.sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        return b.updated.getTime() - a.updated.getTime();
+      });
+
+      dailyBreakdown._meta.filesFound = candidateFiles.map(c => ({
+        name: c.name,
+        id: c.file.getId(),
+        updated: c.updated,
+        priority: c.priority
+      }));
+
+      for (let cand of candidateFiles) {
+        try {
+          let testSS = SpreadsheetApp.openById(cand.file.getId());
+          let testSummary = testSS.getSheetByName("Summary");
+          if (!testSummary) {
+            for (let s of testSS.getSheets()) {
+              let sn = s.getName().toLowerCase();
+              if (sn === "summary" || (sn.includes("summary") && !sn.includes("weekly") && !sn.includes("angel"))) {
+                testSummary = s;
+                break;
+              }
+            }
+          }
+          if (testSummary && testSummary.getLastRow() >= 3) {
+            dailySS = testSS;
+            dailyBreakdown._meta.selectedFile = {
+              name: cand.name,
+              id: cand.file.getId(),
+              source: "Google Drive Folder '" + yearFolder.getName() + "'",
+              lastUpdated: cand.updated
+            };
+            break;
+          }
+        } catch (e) {
+          Logger.log("Could not open candidate file " + cand.name + ": " + e.message);
         }
       }
     }
 
-    if (!targetFile) {
-      Logger.log("Daily Balance file not found: " + targetFileName + " in folder " + yearFolder.getName());
+    if (!dailySS) {
+      let err = "No valid '" + targetFileName + "' spreadsheet found in Drive folder or direct URL.";
+      Logger.log(err);
+      dailyBreakdown._meta.errors.push(err);
       continue;
     }
 
-    // 3. Open Spreadsheet & access Summary sheet
-    let dailySS;
-    try {
-      dailySS = SpreadsheetApp.openById(targetFile.getId());
-    } catch (e) {
-      Logger.log("Could not open spreadsheet " + targetFile.getName() + ": " + e.message);
-      continue;
-    }
-
+    // Access the Summary sheet
     let summarySheet = dailySS.getSheetByName("Summary");
     if (!summarySheet) {
       for (let s of dailySS.getSheets()) {
         let sn = s.getName().toLowerCase();
-        if (sn.includes("summary") || sn.includes("balance") || sn.includes("daily")) {
+        if (sn === "summary" || (sn.includes("summary") && !sn.includes("weekly") && !sn.includes("angel"))) {
           summarySheet = s;
           break;
         }
@@ -919,22 +1026,15 @@ function fetchDailyBalanceBreakdown(period, tz) {
     if (!summarySheet) summarySheet = dailySS.getSheets()[0];
     if (!summarySheet || summarySheet.getLastRow() < 2) continue;
 
-    let allValues = summarySheet.getRange(1, 1, summarySheet.getLastRow(), Math.max(summarySheet.getLastColumn(), 11)).getValues();
+    let range = summarySheet.getRange(1, 1, summarySheet.getLastRow(), Math.max(summarySheet.getLastColumn(), 11));
+    let allValues = range.getValues();
+    let allDisplayValues = range.getDisplayValues();
 
-    // 4. Map Header Columns
+    // Map Header Columns
     let headerRowIdx = -1;
     let colMap = {
-      date: -1,
-      driver: -1,
-      grossFare: -1,
-      hours: -1,
-      driverAvg: -1,
-      cph: -1,
-      trips: -1,
-      cash: -1,
-      tolls: -1,
-      creditDebit: -1,
-      balance: -1
+      date: -1, driver: -1, grossFare: -1, hours: -1, driverAvg: -1,
+      cph: -1, trips: -1, cash: -1, tolls: -1, creditDebit: -1, balance: -1
     };
 
     for (let r = 0; r < Math.min(allValues.length, 6); r++) {
@@ -975,16 +1075,18 @@ function fetchDailyBalanceBreakdown(period, tz) {
     let currentDisplayDate = null;
 
     let startR = headerRowIdx !== -1 ? headerRowIdx + 1 : 2;
-    let pStartTime = new Date(period.start); pStartTime.setHours(0, 0, 0, 0);
-    let pEndTime = new Date(period.end); pEndTime.setHours(23, 59, 59, 999);
 
     // 5. Parse Data Rows
     for (let r = startR; r < allValues.length; r++) {
       let row = allValues[r] || [];
-      let dateCell = row[colMap.date];
+      let displayRow = allDisplayValues[r] || [];
 
-      if (dateCell !== "" && dateCell != null) {
-        let d = resolveDailyDate(dateCell, target.year, target.monthIndex, tz);
+      let rawDateCell = row[colMap.date];
+      let displayDateCell = displayRow[colMap.date];
+
+      // Only update date when the cell actually has text (prevents empty merged cells from resetting date)
+      if (String(displayDateCell || rawDateCell || '').trim() !== "") {
+        let d = resolveDailyDate(rawDateCell, displayDateCell, target.year, target.monthIndex, tz);
         if (d && !isNaN(d.getTime())) {
           currentDate = d;
           currentIsoDate = Utilities.formatDate(d, tz, "yyyy-MM-dd");
@@ -992,10 +1094,10 @@ function fetchDailyBalanceBreakdown(period, tz) {
         }
       }
 
-      if (!currentDate) continue;
+      if (!currentDate || !currentIsoDate) continue;
 
-      let dTime = new Date(currentDate).setHours(12, 0, 0, 0);
-      if (dTime < pStartTime.getTime() || dTime > pEndTime.getTime()) continue;
+      // Filter by period bounds using ISO date string comparison
+      if (currentIsoDate < pStartIso || currentIsoDate > pEndIso) continue;
 
       let driverName = String(row[colMap.driver] || "").trim();
       if (!driverName || driverName.toLowerCase().startsWith("total")) continue;
@@ -1007,6 +1109,9 @@ function fetchDailyBalanceBreakdown(period, tz) {
       let cash = colMap.cash !== -1 ? parseMoney(row[colMap.cash]) : 0;
       let tolls = colMap.tolls !== -1 ? parseMoney(row[colMap.tolls]) : 0;
       let creditDebit = colMap.creditDebit !== -1 ? parseMoney(row[colMap.creditDebit]) : 0;
+
+      // Skip rows where the driver did not work or had zero activity
+      if (trips === 0 && grossFare === 0 && tolls === 0 && cash === 0) continue;
 
       // Net fare without tolls
       let netFare = 0;
@@ -1143,31 +1248,73 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
 
   let sortedDriverNames = Object.keys(payablesData.driverInfo).sort((a, b) => a.localeCompare(b));
 
+  let discrepancyList = [];
+
   for (let name of sortedDriverNames) {
     let info = payablesData.driverInfo[name];
     let normKey = name.toLowerCase().replace(/\s+/g, " ");
 
     let activeRate = finalRates[name] !== undefined ? finalRates[name] : 0.90;
-    let driverPay = info.net * activeRate;
-    let driverTotal = driverPay + info.tolls;
+
+    let driverDaily = getDriverDailyMap(dailyBreakdown, name);
+    let dailyDates = Object.keys(driverDaily).sort();
+
+    let hasDaily = dailyDates.length > 0;
+    let dailySumTrips = 0;
+    let dailySumNet = 0;
+    let dailySumTolls = 0;
+    let dailySumCash = 0;
+
+    if (hasDaily) {
+      dailyDates.forEach(isoDate => {
+        let day = driverDaily[isoDate];
+        dailySumTrips += day.count;
+        dailySumNet += day.net;
+        dailySumTolls += day.tolls;
+        dailySumCash += day.cash;
+      });
+    }
+
+    // Safety Defense: If Payables sheet has trips (e.g. 84 for Koba) and Daily Balance doesn't match:
+    // Flag discrepancy and DO NOT allow partial numbers to corrupt payroll totals!
+    let tripDiscrepancy = (info.trips > 0 && hasDaily && dailySumTrips !== info.trips);
+    if (tripDiscrepancy) {
+      discrepancyList.push({
+        driver: name,
+        summaryTrips: info.trips,
+        dailyTrips: dailySumTrips,
+        daysCount: dailyDates.length
+      });
+    }
+
+    let totalTrips = (!tripDiscrepancy && hasDaily) ? dailySumTrips : info.trips;
+    let totalTolls = (!tripDiscrepancy && hasDaily) ? dailySumTolls : info.tolls;
+    let totalNet = (!tripDiscrepancy && hasDaily) ? dailySumNet : info.net;
+    let totalCash = (info.cash > 0) ? info.cash : (hasDaily ? dailySumCash : 0);
+
+    let driverPay = totalNet * activeRate;
+    let driverTotal = driverPay + totalTolls;
 
     // Header Row
-    paySheet.getRange(currentRow, 2, 1, 5).setValues([["Driver", "Num of Trips", "Price", "Tolls", "Driver Total"]])
+    let headRange = paySheet.getRange(currentRow, 2, 1, 5);
+    headRange.setValues([["Driver", "Num of Trips", "Price", "Tolls", "Driver Total"]])
       .setFontWeight("bold").setBackground(HEADER_BLUE).setBorder(true, false, true, false, false, false, BORDER_BLUE, SpreadsheetApp.BorderStyle.SOLID);
+    paySheet.getRange(currentRow, 2).setHorizontalAlignment("left");
+    paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
+    paySheet.getRange(currentRow, 4, 1, 3).setHorizontalAlignment("right");
     currentRow++;
 
     // Summary Row
     let summaryRange = paySheet.getRange(currentRow, 2, 1, 5);
-    summaryRange.setValues([[name, info.trips, driverPay, info.tolls, driverTotal]]).setFontWeight("bold");
+    summaryRange.setValues([[name, totalTrips, driverPay, totalTolls, driverTotal]]).setFontWeight("bold");
     paySheet.getRange(currentRow, 2).setHorizontalAlignment("left");
+    paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
+    paySheet.getRange(currentRow, 4, 1, 3).setHorizontalAlignment("right");
     summaryRange.setBorder(false, false, true, false, false, false, BORDER_BLUE, SpreadsheetApp.BorderStyle.SOLID);
     currentRow++;
 
     // Daily Rows from Daily Balance
-    let driverDaily = getDriverDailyMap(dailyBreakdown, name);
-    let dailyDates = Object.keys(driverDaily).sort();
-
-    if (dailyDates.length > 0) {
+    if (hasDaily) {
       dailyDates.forEach(isoDate => {
         let day = driverDaily[isoDate];
         let dayPrice = day.net * activeRate;
@@ -1176,40 +1323,46 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
           [day.displayDate, day.count, dayPrice, day.tolls, dayDriverTotal]
         ]);
         paySheet.getRange(currentRow, 2).setHorizontalAlignment("right");
+        paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
+        paySheet.getRange(currentRow, 4, 1, 3).setHorizontalAlignment("right");
         currentRow++;
       });
     }
 
     // Grand Total Row
-    paySheet.getRange(currentRow, 2, 1, 4).setValues([["Grand Total", info.trips, driverPay, info.tolls]])
+    let grandRange = paySheet.getRange(currentRow, 2, 1, 4);
+    grandRange.setValues([["Grand Total", totalTrips, driverPay, totalTolls]])
       .setFontWeight("bold").setBackground(HEADER_BLUE).setBorder(true, false, true, false, false, false, BORDER_BLUE, SpreadsheetApp.BorderStyle.SOLID);
+    paySheet.getRange(currentRow, 2).setHorizontalAlignment("left");
+    paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
+    paySheet.getRange(currentRow, 4, 1, 2).setHorizontalAlignment("right");
 
     let totalCell = paySheet.getRange(currentRow, 6, 2, 1);
     totalCell.merge().setValue(driverTotal).setFontWeight("bold").setFontSize(20).setBackground(HEADER_BLUE)
-      .setVerticalAlignment("middle").setHorizontalAlignment("right")
+      .setVerticalAlignment("middle").setHorizontalAlignment("center")
       .setBorder(true, true, true, true, null, null, "black", SpreadsheetApp.BorderStyle.SOLID_THICK);
     currentRow += 2;
 
     // Sub: Cash Collected
-    if (info.cash > 0) {
-      paySheet.getRange(currentRow, 4).setValue("Sub: Cash Collected");
-      paySheet.getRange(currentRow, 6).setValue(-info.cash);
+    if (totalCash > 0) {
+      paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Sub: Cash Collected").setHorizontalAlignment("center");
+      paySheet.getRange(currentRow, 6).setValue(-totalCash).setHorizontalAlignment("right");
       currentRow++;
     }
 
     // Sub: Debits
     let debitAmt = Math.abs(info.debits || 0);
     if (debitAmt > 0) {
-      paySheet.getRange(currentRow, 4).setValue("Sub: Debits");
-      paySheet.getRange(currentRow, 6).setValue(-debitAmt);
+      paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Sub: Debits").setHorizontalAlignment("center");
+      paySheet.getRange(currentRow, 6).setValue(-debitAmt).setHorizontalAlignment("right");
       currentRow++;
     }
 
     // Add: Credits
     let creditAmt = Math.abs(info.credits || 0);
     if (creditAmt > 0) {
-      paySheet.getRange(currentRow, 4).setValue("Add: Credits");
-      paySheet.getRange(currentRow, 6).setValue(creditAmt);
+      paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Add: Credits").setHorizontalAlignment("center");
+      paySheet.getRange(currentRow, 6).setValue(creditAmt).setHorizontalAlignment("right");
       currentRow++;
     }
 
@@ -1219,14 +1372,14 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
     if (advList) {
       advList.forEach(adv => {
         if (adv.amount > 0) {
-          paySheet.getRange(currentRow, 4).setValue("Sub: Advanced Payment");
-          paySheet.getRange(currentRow, 6).setValue(-adv.amount);
+          paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Sub: Advanced Payment").setHorizontalAlignment("center");
+          paySheet.getRange(currentRow, 6).setValue(-adv.amount).setHorizontalAlignment("right");
           advanceSum += adv.amount;
           currentRow++;
         }
         if (adv.fee > 0) {
-          paySheet.getRange(currentRow, 4).setValue("Sub: Fees");
-          paySheet.getRange(currentRow, 6).setValue(-adv.fee);
+          paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Sub: Fees").setHorizontalAlignment("center");
+          paySheet.getRange(currentRow, 6).setValue(-adv.fee).setHorizontalAlignment("right");
           advanceSum += adv.fee;
           currentRow++;
         }
@@ -1236,13 +1389,13 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
     // Refunds / Additions
     let addPayAmt = additionalPayments[name] || 0;
     if (addPayAmt !== 0) {
-      paySheet.getRange(currentRow, 4).setValue(addPayAmt > 0 ? "Add: Refund / Addition" : "Sub: Refund / Deduction");
-      paySheet.getRange(currentRow, 6).setValue(addPayAmt);
+      paySheet.getRange(currentRow, 4, 1, 2).merge().setValue(addPayAmt > 0 ? "Add: Refund / Addition" : "Sub: Refund / Deduction").setHorizontalAlignment("center");
+      paySheet.getRange(currentRow, 6).setValue(addPayAmt).setHorizontalAlignment("right");
       currentRow++;
     }
 
     // Loan Repayment (Advances & Additions First!)
-    let preLoanBalance = driverTotal - info.cash + creditAmt - debitAmt - advanceSum + addPayAmt;
+    let preLoanBalance = driverTotal - totalCash + creditAmt - debitAmt - advanceSum + addPayAmt;
     let fundsAvailable = Math.max(0, preLoanBalance);
     let totalLoanDeducted = 0;
 
@@ -1268,8 +1421,8 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
               let origDate = parseTripDate(loan.date, tz) || new Date(loan.date);
               dStr = " (" + Utilities.formatDate(origDate, tz, "MM/dd/yy") + ")";
             }
-            paySheet.getRange(currentRow, 4).setValue("Sub: Loan Repayment" + dStr);
-            paySheet.getRange(currentRow, 6).setValue(-actualDeduct);
+            paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Sub: Loan Repayment" + dStr).setHorizontalAlignment("center");
+            paySheet.getRange(currentRow, 6).setValue(-actualDeduct).setHorizontalAlignment("right");
             currentRow++;
 
             fundsAvailable -= actualDeduct;
@@ -1287,24 +1440,27 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
       });
     }
 
+    // Blank row before Driver Balance
+    currentRow++;
+
     let finalBal = preLoanBalance - totalLoanDeducted;
     totalAllBalances += finalBal;
 
-    paySheet.getRange(currentRow, 4).setValue("Driver Balance");
-    paySheet.getRange(currentRow, 6).setValue(finalBal);
+    paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Driver Balance").setHorizontalAlignment("center");
+    paySheet.getRange(currentRow, 6).setValue(finalBal).setHorizontalAlignment("right");
     paySheet.getRange(currentRow, 4, 1, 3).setBackground(HEADER_BLUE).setFontWeight("bold").setFontColor("black").setFontStyle("normal");
-    currentRow += 4;
+    currentRow += 3; // Leaves exactly 2 blank rows before the next driver
   }
 
   // TOTAL PAYOUT
-  paySheet.getRange(currentRow, 4).setValue("TOTAL PAYOUT");
-  paySheet.getRange(currentRow, 6).setValue(totalAllBalances);
+  paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("TOTAL PAYOUT").setHorizontalAlignment("center");
+  paySheet.getRange(currentRow, 6).setValue(totalAllBalances).setHorizontalAlignment("right");
   paySheet.getRange(currentRow, 4, 1, 3).setBackground(HEADER_BLUE).setFontWeight("bold").setFontSize(12)
     .setBorder(true, true, true, true, false, false, "black", SpreadsheetApp.BorderStyle.SOLID);
 
+  paySheet.getRange(1, 3, currentRow, 1).setNumberFormat("#,##0").setHorizontalAlignment("center");
   paySheet.getRange(1, 4, currentRow + 1, 3).setNumberFormat("#,##0.00");
-  paySheet.getRange(1, 3, currentRow, 1).setHorizontalAlignment("center");
-  paySheet.getRange(1, 4, currentRow, 3).setHorizontalAlignment("right");
+  paySheet.getRange(1, 6, currentRow + 1, 1).setHorizontalAlignment("right");
   paySheet.setColumnWidth(1, 60);
   paySheet.setColumnWidth(2, 160);
   paySheet.setColumnWidth(3, 100);
@@ -1335,7 +1491,30 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
     alertMessage += "\n\n(Master Database 'Loans' sheet has been securely updated. All balances auto-calculated. The system locked the dates so you can safely re-run this file without double counting!).";
   }
 
-  SpreadsheetApp.getUi().alert(alertMessage);
+  if (discrepancyList.length > 0) {
+    let discLines = discrepancyList.map(d =>
+      "  • " + d.driver + ": Payables sheet has " + d.summaryTrips + " trips, but Daily Balance file only had " + d.dailyTrips + " trips (" + d.daysCount + " day row(s))."
+    ).join("\n");
+
+    let meta = dailyBreakdown._meta || {};
+    let fileName = (meta.selectedFile && meta.selectedFile.name) ? meta.selectedFile.name : "Unknown File";
+    let fileSource = (meta.selectedFile && meta.selectedFile.source) ? meta.selectedFile.source : "Drive Folder";
+
+    let warnMsg = "⚠️ WARNING: TRIP COUNT DISCREPANCY DETECTED!\n\n" +
+      "The script detected a mismatch between your Payables summary sheet and the parsed Daily Balance sheet:\n\n" +
+      "📁 File Parsed: " + fileName + "\n" +
+      "📍 Source: " + fileSource + "\n\n" +
+      "Discrepancies found for " + discrepancyList.length + " driver(s):\n" +
+      discLines + "\n\n" +
+      "🛡️ SAFETY ACTION APPLIED:\n" +
+      "To protect your payroll and avoid incorrect payouts, the verified summary totals (e.g. trips and balances) from your Payables sheet have been PRESERVED on the payslips.\n\n" +
+      "👉 To diagnose which file Google Drive is opening, click 'AYOAH Automation -> 🔍 3. Diagnose Daily Balance File'.\n" +
+      "👉 Or paste the exact sheet link directly into MONTHLY_BALANCE_FILE_URL at the top of Code.js.";
+
+    SpreadsheetApp.getUi().alert(warnMsg);
+  } else {
+    SpreadsheetApp.getUi().alert(alertMessage);
+  }
 }
 
 /**
@@ -1723,4 +1902,108 @@ function runCompletePayroll() {
   }
 
   return SpreadsheetApp.getUi().alert("Error: Neither 'AYOAH GO Drivers — payables' nor 'Trip Information' sheet was found.");
+}
+
+/**
+ * Diagnostic Tool: Inspects Google Drive Daily Balance folders and files,
+ * validates connectivity, checks pay period bounds, and tests parsing.
+ * Can be run from the 'AYOAH Automation -> 🔍 3. Diagnose Daily Balance File' menu.
+ */
+function diagnoseDailyBalanceConnection() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tz = ss.getSpreadsheetTimeZone();
+
+  let log = [];
+  log.push("=== AYOAH DAILY BALANCE CONNECTION DIAGNOSTICS ===");
+  log.push("Timestamp: " + Utilities.formatDate(new Date(), tz, "yyyy-MM-dd HH:mm:ss"));
+  log.push("Configured Base Folder ID: " + DAILY_BALANCE_BASE_FOLDER_ID);
+  log.push("Configured Direct File URL: " + (MONTHLY_BALANCE_FILE_URL || "(None set - using automatic Google Drive search)"));
+
+  // 1. Payables Period
+  let payablesSheet = findPayablesSheet(ss);
+  let payablesData = payablesSheet ? parsePayablesSheet(payablesSheet, tz) : null;
+  if (payablesData && payablesData.period) {
+    log.push("\n--- PAY PERIOD DETECTED ---");
+    log.push("Raw Period Text: " + payablesData.period.raw);
+    log.push("Start Date: " + Utilities.formatDate(payablesData.period.start, tz, "yyyy-MM-dd"));
+    log.push("End Date: " + Utilities.formatDate(payablesData.period.end, tz, "yyyy-MM-dd"));
+    log.push("Drivers in Payables: " + Object.keys(payablesData.driverInfo).length);
+    for (let d in payablesData.driverInfo) {
+      let inf = payablesData.driverInfo[d];
+      log.push(`  • ${d}: ${inf.trips} trips, Net $${inf.net.toFixed(2)}, Tolls $${inf.tolls.toFixed(2)}, Cash $${inf.cash.toFixed(2)}`);
+    }
+  } else {
+    log.push("\n⚠️ Could not detect pay period in payables sheet!");
+  }
+
+  // 2. Drive Folder Inspection
+  log.push("\n--- GOOGLE DRIVE FOLDER INSPECTION ---");
+  try {
+    let baseFolder = DriveApp.getFolderById(DAILY_BALANCE_BASE_FOLDER_ID);
+    log.push("✅ Connected to Base Folder: '" + baseFolder.getName() + "'");
+
+    let subfolders = baseFolder.getFolders();
+    let foundSubfolders = false;
+    while (subfolders.hasNext()) {
+      foundSubfolders = true;
+      let sf = subfolders.next();
+      log.push(`  📁 [Folder] '${sf.getName()}' (ID: ${sf.getId()})`);
+
+      if (sf.getName().includes("2026")) {
+        let files = sf.getFiles();
+        log.push(`    Files inside '${sf.getName()}':`);
+        let fCount = 0;
+        while (files.hasNext()) {
+          let f = files.next();
+          fCount++;
+          let upd = Utilities.formatDate(f.getLastUpdated(), tz, "yyyy-MM-dd HH:mm");
+          let trashed = f.isTrashed() ? " [TRASHED]" : "";
+          log.push(`      📄 ${f.getName()} | Updated: ${upd}${trashed} | ID: ${f.getId()}`);
+        }
+        if (fCount === 0) log.push("      (No files found)");
+      }
+    }
+    if (!foundSubfolders) log.push("  (No subfolders found)");
+  } catch (e) {
+    log.push("❌ Error connecting to Base Folder: " + e.message);
+  }
+
+  // 3. Test Daily Breakdown Fetch
+  if (payablesData && payablesData.period) {
+    log.push("\n--- TEST PARSING DAILY BREAKDOWN ---");
+    let testBreakdown = fetchDailyBalanceBreakdown(payablesData.period, tz);
+    let meta = testBreakdown._meta || {};
+    if (meta.selectedFile) {
+      log.push(`✅ Successfully selected file: '${meta.selectedFile.name}'`);
+      log.push(`   Source: ${meta.selectedFile.source}`);
+      log.push(`   ID: ${meta.selectedFile.id}`);
+      log.push(`   Last Updated: ${meta.selectedFile.lastUpdated}`);
+    } else {
+      log.push(`⚠️ No file selected! Errors: ` + (meta.errors || []).join("; "));
+    }
+
+    log.push("\nParsed Driver Daily Breakdowns:");
+    let driverKeys = Object.keys(testBreakdown).filter(k => k !== "_meta");
+    if (driverKeys.length === 0) {
+      log.push("  (No driver breakdowns parsed)");
+    } else {
+      driverKeys.forEach(k => {
+        let days = testBreakdown[k];
+        let dateKeys = Object.keys(days);
+        let sumTrips = dateKeys.reduce((acc, dt) => acc + days[dt].count, 0);
+        log.push(`  • ${k}: ${sumTrips} trips across ${dateKeys.length} date(s): [${dateKeys.join(", ")}]`);
+      });
+    }
+  }
+
+  // 4. Output to dedicated Diagnostics Sheet Tab
+  let diagSheetName = "Daily_Balance_Diagnostics";
+  let diagSheet = ss.getSheetByName(diagSheetName);
+  if (diagSheet) ss.deleteSheet(diagSheet);
+  diagSheet = ss.insertSheet(diagSheetName);
+  diagSheet.getRange(1, 1).setValue(log.join("\n")).setFontFamily("Consolas").setFontSize(10);
+  diagSheet.setColumnWidth(1, 800);
+  ss.setActiveSheet(diagSheet);
+
+  SpreadsheetApp.getUi().alert("🔍 Diagnostics Complete!\n\nA detailed report has been generated in the '" + diagSheetName + "' sheet tab.");
 }
