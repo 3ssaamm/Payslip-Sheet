@@ -773,6 +773,37 @@ function getDriverDailyMap(dailyBreakdown, driverName) {
 }
 
 /**
+ * Helper: Parses and resolves daily dates from the Monthly sheet (handling "Thursday, 01", native Dates, ISO, etc.)
+ */
+function resolveDailyDate(dateCell, targetYear, targetMonthIndex, tz) {
+  if (!dateCell) return null;
+  if (dateCell instanceof Date && !isNaN(dateCell.getTime())) {
+    if (dateCell.getFullYear() >= 2020) {
+      return dateCell;
+    } else {
+      return new Date(targetYear, targetMonthIndex, dateCell.getDate(), 12, 0, 0, 0);
+    }
+  }
+
+  let str = String(dateCell).trim();
+  let fullDate = parseFlexibleDate(str) || parseTripDate(str, tz);
+  if (fullDate && fullDate.getFullYear() >= 2020) {
+    return fullDate;
+  }
+
+  // Handle "Thursday, 01", "Monday, 05", "Wednesday, 7", etc.
+  let dayMatch = str.match(/(?:mon|tue|wed|thu|fri|sat|sun)?[a-z]*[,\s]+(\d{1,2})/i);
+  if (dayMatch) {
+    let dayNum = parseInt(dayMatch[1], 10);
+    if (dayNum >= 1 && dayNum <= 31) {
+      return new Date(targetYear, targetMonthIndex, dayNum, 12, 0, 0, 0);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Helper: Fetches the daily trip and price breakdown for each driver from Google Drive Daily Balance sheets.
  * Path structure: Base Folder (DAILY_BALANCE_BASE_FOLDER_ID) -> Year (e.g. 2026) -> Monthly Sheet (e.g. "October - Drivers Daily Balance") -> "Summary" tab
  */
@@ -888,25 +919,40 @@ function fetchDailyBalanceBreakdown(period, tz) {
     if (!summarySheet) summarySheet = dailySS.getSheets()[0];
     if (!summarySheet || summarySheet.getLastRow() < 2) continue;
 
-    let allValues = summarySheet.getRange(1, 1, summarySheet.getLastRow(), Math.max(summarySheet.getLastColumn(), 10)).getValues();
+    let allValues = summarySheet.getRange(1, 1, summarySheet.getLastRow(), Math.max(summarySheet.getLastColumn(), 11)).getValues();
 
     // 4. Map Header Columns
     let headerRowIdx = -1;
-    let colMap = { date: -1, driver: -1, credit: -1, hours: -1, driverAvg: -1, cph: -1, trips: -1, cash: -1 };
+    let colMap = {
+      date: -1,
+      driver: -1,
+      grossFare: -1,
+      hours: -1,
+      driverAvg: -1,
+      cph: -1,
+      trips: -1,
+      cash: -1,
+      tolls: -1,
+      creditDebit: -1,
+      balance: -1
+    };
 
     for (let r = 0; r < Math.min(allValues.length, 6); r++) {
       let row = (allValues[r] || []).map(c => String(c || "").trim().toLowerCase());
-      if (row.includes("date") && (row.includes("driver") || row.includes("trips") || row.includes("hours"))) {
+      if (row.includes("date") && (row.includes("driver") || row.includes("trips") || row.includes("hours") || row.includes("gross fare"))) {
         headerRowIdx = r;
         row.forEach((h, idx) => {
           if (h === "date") colMap.date = idx;
           else if (h === "driver" || h === "driver name" || h === "name") colMap.driver = idx;
-          else if (h === "credit" || h === "credits") colMap.credit = idx;
+          else if (h.includes("gross")) colMap.grossFare = idx;
           else if (h === "hours" || h === "hour") colMap.hours = idx;
           else if (h.includes("avg") && (h.includes("hour") || h.includes("driver"))) colMap.driverAvg = idx;
           else if (h === "cph") colMap.cph = idx;
           else if (h === "trips" || h === "num of trips") colMap.trips = idx;
           else if (h === "cash") colMap.cash = idx;
+          else if (h.includes("toll")) colMap.tolls = idx;
+          else if (h.includes("credit") || h.includes("debit")) colMap.creditDebit = idx;
+          else if (h.includes("balance")) colMap.balance = idx;
         });
         break;
       }
@@ -914,12 +960,15 @@ function fetchDailyBalanceBreakdown(period, tz) {
 
     if (colMap.date === -1) colMap.date = 0;
     if (colMap.driver === -1) colMap.driver = 1;
-    if (colMap.credit === -1) colMap.credit = 2;
+    if (colMap.grossFare === -1) colMap.grossFare = 2;
     if (colMap.hours === -1) colMap.hours = 3;
     if (colMap.driverAvg === -1) colMap.driverAvg = 4;
     if (colMap.cph === -1) colMap.cph = 5;
     if (colMap.trips === -1) colMap.trips = 6;
     if (colMap.cash === -1) colMap.cash = 7;
+    if (colMap.tolls === -1) colMap.tolls = 8;
+    if (colMap.creditDebit === -1) colMap.creditDebit = 9;
+    if (colMap.balance === -1) colMap.balance = 10;
 
     let currentDate = null;
     let currentIsoDate = null;
@@ -935,7 +984,7 @@ function fetchDailyBalanceBreakdown(period, tz) {
       let dateCell = row[colMap.date];
 
       if (dateCell !== "" && dateCell != null) {
-        let d = (dateCell instanceof Date) ? dateCell : (parseFlexibleDate(dateCell) || parseTripDate(dateCell, tz));
+        let d = resolveDailyDate(dateCell, target.year, target.monthIndex, tz);
         if (d && !isNaN(d.getTime())) {
           currentDate = d;
           currentIsoDate = Utilities.formatDate(d, tz, "yyyy-MM-dd");
@@ -951,13 +1000,22 @@ function fetchDailyBalanceBreakdown(period, tz) {
       let driverName = String(row[colMap.driver] || "").trim();
       if (!driverName || driverName.toLowerCase().startsWith("total")) continue;
 
-      let trips = Number(row[colMap.trips]) || 0;
-      let hours = Number(row[colMap.hours]) || 0;
+      let grossFare = colMap.grossFare !== -1 ? parseMoney(row[colMap.grossFare]) : 0;
+      let hours = colMap.hours !== -1 ? Number(row[colMap.hours]) || 0 : 0;
       let driverAvg = colMap.driverAvg !== -1 ? parseMoney(row[colMap.driverAvg]) : 0;
-      let credit = colMap.credit !== -1 ? parseMoney(row[colMap.credit]) : 0;
+      let trips = colMap.trips !== -1 ? (Number(row[colMap.trips]) || 0) : 0;
       let cash = colMap.cash !== -1 ? parseMoney(row[colMap.cash]) : 0;
+      let tolls = colMap.tolls !== -1 ? parseMoney(row[colMap.tolls]) : 0;
+      let creditDebit = colMap.creditDebit !== -1 ? parseMoney(row[colMap.creditDebit]) : 0;
 
-      let dailyTotal = credit > 0 ? credit : (hours > 0 && driverAvg > 0 ? (hours * driverAvg) : 0);
+      // Net fare without tolls
+      let netFare = 0;
+      if (grossFare > 0) {
+        netFare = Math.max(0, grossFare - tolls);
+      } else if (hours > 0 && driverAvg > 0) {
+        netFare = hours * driverAvg;
+        grossFare = netFare + tolls;
+      }
 
       let key = driverName.toLowerCase().replace(/\s+/g, " ");
       if (!dailyBreakdown[key]) dailyBreakdown[key] = {};
@@ -965,14 +1023,24 @@ function fetchDailyBalanceBreakdown(period, tz) {
         dailyBreakdown[key][currentIsoDate] = {
           displayDate: currentDisplayDate,
           count: 0,
-          total: 0,
-          cash: 0
+          gross: 0,
+          net: 0,
+          tolls: 0,
+          cash: 0,
+          creditDebit: 0,
+          hours: 0,
+          driverAvg: 0
         };
       }
 
       dailyBreakdown[key][currentIsoDate].count += trips;
-      dailyBreakdown[key][currentIsoDate].total += dailyTotal;
+      dailyBreakdown[key][currentIsoDate].gross += grossFare;
+      dailyBreakdown[key][currentIsoDate].net += netFare;
+      dailyBreakdown[key][currentIsoDate].tolls += tolls;
       dailyBreakdown[key][currentIsoDate].cash += cash;
+      dailyBreakdown[key][currentIsoDate].creditDebit += creditDebit;
+      dailyBreakdown[key][currentIsoDate].hours += hours;
+      dailyBreakdown[key][currentIsoDate].driverAvg = driverAvg;
     }
   }
 
@@ -1102,7 +1170,11 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
     if (dailyDates.length > 0) {
       dailyDates.forEach(isoDate => {
         let day = driverDaily[isoDate];
-        paySheet.getRange(currentRow, 2, 1, 5).setValues([[day.displayDate, day.count, day.total, "", day.total]]);
+        let dayPrice = day.net * activeRate;
+        let dayDriverTotal = dayPrice + day.tolls;
+        paySheet.getRange(currentRow, 2, 1, 5).setValues([
+          [day.displayDate, day.count, dayPrice, day.tolls, dayDriverTotal]
+        ]);
         paySheet.getRange(currentRow, 2).setHorizontalAlignment("right");
         currentRow++;
       });
