@@ -18,7 +18,8 @@ function onOpen() {
     .addSeparator()
     .addItem('2. Generate Payslip', 'runCompletePayroll')
     .addSeparator()
-    .addItem('🔍 3. Diagnose Daily Balance File', 'diagnoseDailyBalanceConnection')
+    .addItem('🧪 Test Daily Balance Reader', 'testDailyBalanceReader')
+    .addItem('🔍 Diagnose Daily Balance File', 'diagnoseDailyBalanceConnection')
     .addToUi();
 }
 
@@ -782,6 +783,18 @@ function getDriverDailyMap(dailyBreakdown, driverName) {
     }
   }
 
+  // Token-based matching: first and last name match
+  let tokens = clean.split(/\s+/).filter(t => t.length > 2);
+  if (tokens.length >= 2) {
+    let first = tokens[0];
+    let last = tokens[tokens.length - 1];
+    for (let k in dailyBreakdown) {
+      if (k.includes(first) && k.includes(last)) {
+        return dailyBreakdown[k];
+      }
+    }
+  }
+
   return {};
 }
 
@@ -1026,11 +1039,12 @@ function fetchDailyBalanceBreakdown(period, tz) {
     if (!summarySheet) summarySheet = dailySS.getSheets()[0];
     if (!summarySheet || summarySheet.getLastRow() < 2) continue;
 
-    let range = summarySheet.getRange(1, 1, summarySheet.getLastRow(), Math.max(summarySheet.getLastColumn(), 11));
+    // Restrict range to columns A through K (1 to 11) to isolate the data table and avoid charts/pivots in cols L+
+    let range = summarySheet.getRange(1, 1, summarySheet.getLastRow(), 11);
     let allValues = range.getValues();
     let allDisplayValues = range.getDisplayValues();
 
-    // Map Header Columns
+    // Map Header Columns strictly within columns A-K (0 to 10)
     let headerRowIdx = -1;
     let colMap = {
       date: -1, driver: -1, grossFare: -1, hours: -1, driverAvg: -1,
@@ -1038,37 +1052,37 @@ function fetchDailyBalanceBreakdown(period, tz) {
     };
 
     for (let r = 0; r < Math.min(allValues.length, 6); r++) {
-      let row = (allValues[r] || []).map(c => String(c || "").trim().toLowerCase());
+      let row = (allValues[r] || []).slice(0, 11).map(c => String(c || "").trim().toLowerCase());
       if (row.includes("date") && (row.includes("driver") || row.includes("trips") || row.includes("hours") || row.includes("gross fare"))) {
         headerRowIdx = r;
-        row.forEach((h, idx) => {
-          if (h === "date") colMap.date = idx;
-          else if (h === "driver" || h === "driver name" || h === "name") colMap.driver = idx;
-          else if (h.includes("gross")) colMap.grossFare = idx;
-          else if (h === "hours" || h === "hour") colMap.hours = idx;
-          else if (h.includes("avg") && (h.includes("hour") || h.includes("driver"))) colMap.driverAvg = idx;
-          else if (h === "cph") colMap.cph = idx;
-          else if (h === "trips" || h === "num of trips") colMap.trips = idx;
-          else if (h === "cash") colMap.cash = idx;
-          else if (h.includes("toll")) colMap.tolls = idx;
-          else if (h.includes("credit") || h.includes("debit")) colMap.creditDebit = idx;
-          else if (h.includes("balance")) colMap.balance = idx;
+        row.slice(0, 11).forEach((h, idx) => {
+          if (h === "date" && colMap.date === -1) colMap.date = idx;
+          else if ((h === "driver" || h === "driver name" || h === "name") && colMap.driver === -1) colMap.driver = idx;
+          else if (h.includes("gross") && colMap.grossFare === -1) colMap.grossFare = idx;
+          else if ((h === "hours" || h === "hour") && colMap.hours === -1) colMap.hours = idx;
+          else if (h.includes("avg") && (h.includes("hour") || h.includes("driver")) && colMap.driverAvg === -1) colMap.driverAvg = idx;
+          else if (h === "cph" && colMap.cph === -1) colMap.cph = idx;
+          else if ((h === "trips" || h === "num of trips") && colMap.trips === -1) colMap.trips = idx;
+          else if (h === "cash" && colMap.cash === -1) colMap.cash = idx;
+          else if (h.includes("toll") && colMap.tolls === -1) colMap.tolls = idx;
+          else if ((h.includes("credit") || h.includes("debit")) && colMap.creditDebit === -1) colMap.creditDebit = idx;
+          else if (h.includes("balance") && colMap.balance === -1) colMap.balance = idx;
         });
         break;
       }
     }
 
-    if (colMap.date === -1) colMap.date = 0;
-    if (colMap.driver === -1) colMap.driver = 1;
-    if (colMap.grossFare === -1) colMap.grossFare = 2;
-    if (colMap.hours === -1) colMap.hours = 3;
-    if (colMap.driverAvg === -1) colMap.driverAvg = 4;
-    if (colMap.cph === -1) colMap.cph = 5;
-    if (colMap.trips === -1) colMap.trips = 6;
-    if (colMap.cash === -1) colMap.cash = 7;
-    if (colMap.tolls === -1) colMap.tolls = 8;
-    if (colMap.creditDebit === -1) colMap.creditDebit = 9;
-    if (colMap.balance === -1) colMap.balance = 10;
+    if (colMap.date === -1) colMap.date = 0;       // Col A
+    if (colMap.driver === -1) colMap.driver = 1;   // Col B
+    if (colMap.grossFare === -1) colMap.grossFare = 2; // Col C
+    if (colMap.hours === -1) colMap.hours = 3;     // Col D
+    if (colMap.driverAvg === -1) colMap.driverAvg = 4; // Col E
+    if (colMap.cph === -1) colMap.cph = 5;         // Col F
+    if (colMap.trips === -1) colMap.trips = 6;     // Col G
+    if (colMap.cash === -1) colMap.cash = 7;       // Col H
+    if (colMap.tolls === -1) colMap.tolls = 8;     // Col I
+    if (colMap.creditDebit === -1) colMap.creditDebit = 9; // Col J
+    if (colMap.balance === -1) colMap.balance = 10; // Col K
 
     let currentDate = null;
     let currentIsoDate = null;
@@ -2006,4 +2020,156 @@ function diagnoseDailyBalanceConnection() {
   ss.setActiveSheet(diagSheet);
 
   SpreadsheetApp.getUi().alert("🔍 Diagnostics Complete!\n\nA detailed report has been generated in the '" + diagSheetName + "' sheet tab.");
+}
+
+/**
+ * 🧪 Test Runner: Tests reading the Daily Balance sheet without modifying any payslips.
+ * Compares each driver's trip counts between Payables and Daily Balance,
+ * writes an interactive verification table to a 'Daily_Balance_Test_Report' tab, and shows a summary alert.
+ */
+function testDailyBalanceReader() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tz = ss.getSpreadsheetTimeZone();
+
+  let payablesSheet = findPayablesSheet(ss);
+  if (!payablesSheet) {
+    SpreadsheetApp.getUi().alert("❌ Error: Could not find 'AYOAH GO Drivers — payables' sheet tab.");
+    return;
+  }
+
+  let payablesData = parsePayablesSheet(payablesSheet, tz);
+  if (!payablesData || !payablesData.period) {
+    SpreadsheetApp.getUi().alert("❌ Error: Could not parse pay period or drivers from payables sheet.");
+    return;
+  }
+
+  let period = payablesData.period;
+  let pStartStr = Utilities.formatDate(period.start, tz, "yyyy-MM-dd");
+  let pEndStr = Utilities.formatDate(period.end, tz, "yyyy-MM-dd");
+
+  let dailyBreakdown = fetchDailyBalanceBreakdown(period, tz);
+  let meta = dailyBreakdown._meta || {};
+  let fileName = (meta.selectedFile && meta.selectedFile.name) ? meta.selectedFile.name : "Unknown File";
+  let fileSource = (meta.selectedFile && meta.selectedFile.source) ? meta.selectedFile.source : "Drive Folder";
+
+  let results = [];
+  let matchCount = 0;
+  let mismatchCount = 0;
+  let summaryLines = [];
+
+  let sortedDrivers = Object.keys(payablesData.driverInfo).sort((a, b) => a.localeCompare(b));
+
+  for (let name of sortedDrivers) {
+    let pInfo = payablesData.driverInfo[name];
+    let pTrips = pInfo.trips || 0;
+
+    let driverDaily = getDriverDailyMap(dailyBreakdown, name);
+    let dayKeys = Object.keys(driverDaily).sort();
+
+    let dTrips = 0;
+    let dNet = 0;
+    let dTolls = 0;
+    let dCash = 0;
+    let dayDetails = [];
+
+    dayKeys.forEach(dt => {
+      let d = driverDaily[dt];
+      dTrips += d.count;
+      dNet += d.net;
+      dTolls += d.tolls;
+      dCash += d.cash;
+      dayDetails.push(`${d.displayDate || dt} (${d.count} trips)`);
+    });
+
+    let isMatch = (pTrips === dTrips);
+    if (isMatch) matchCount++;
+    else mismatchCount++;
+
+    let statusText = isMatch ? "✅ MATCH" : "❌ MISMATCH";
+    results.push([
+      name,
+      pTrips,
+      dTrips,
+      statusText,
+      dayKeys.length,
+      dayDetails.join(", ") || "(No days recorded)",
+      dCash,
+      dTolls,
+      dNet
+    ]);
+
+    summaryLines.push(
+      `• ${name}: Payables = ${pTrips} trips | Daily = ${dTrips} trips (${dayKeys.length} days) ${isMatch ? '✅' : '❌'}`
+    );
+  }
+
+  // Create or refresh 'Daily_Balance_Test_Report' tab
+  const TAB_NAME = "Daily_Balance_Test_Report";
+  let testSheet = ss.getSheetByName(TAB_NAME);
+  if (testSheet) ss.deleteSheet(testSheet);
+  testSheet = ss.insertSheet(TAB_NAME);
+
+  // Title Block
+  testSheet.getRange(1, 1).setValue("AYOAH DAILY BALANCE READER - VERIFICATION REPORT")
+    .setFontWeight("bold").setFontSize(14).setFontColor("#1a73e8");
+  testSheet.getRange(2, 1).setValue(`File Read: ${fileName} | Source: ${fileSource} | Period: ${pStartStr} to ${pEndStr}`)
+    .setFontStyle("italic").setFontColor("#5f6368");
+  testSheet.getRange(3, 1).setValue(`Total Drivers: ${sortedDrivers.length} | Matches: ${matchCount} | Mismatches: ${mismatchCount}`)
+    .setFontWeight("bold").setFontColor(mismatchCount === 0 ? "#137333" : "#d93025");
+
+  // Table Headers
+  const HEADERS = [
+    "Driver Name",
+    "Payables Trips",
+    "Daily Balance Trips",
+    "Match Status",
+    "Days Count",
+    "Daily Breakdown (Date & Trips)",
+    "Total Cash",
+    "Total Tolls",
+    "Total Net Fare"
+  ];
+  let hRange = testSheet.getRange(5, 1, 1, HEADERS.length);
+  hRange.setValues([HEADERS])
+    .setFontWeight("bold")
+    .setBackground("#1a73e8")
+    .setFontColor("white")
+    .setHorizontalAlignment("center");
+
+  if (results.length > 0) {
+    let dRange = testSheet.getRange(6, 1, results.length, HEADERS.length);
+    dRange.setValues(results);
+
+    // Color code match status & formatting
+    for (let r = 0; r < results.length; r++) {
+      let rowNum = 6 + r;
+      let matched = results[r][3] === "✅ MATCH";
+      testSheet.getRange(rowNum, 4).setBackground(matched ? "#e6f4ea" : "#fce8e6")
+        .setFontColor(matched ? "#137333" : "#c5221f")
+        .setFontWeight("bold")
+        .setHorizontalAlignment("center");
+      
+      testSheet.getRange(rowNum, 2, 1, 2).setHorizontalAlignment("center");
+      testSheet.getRange(rowNum, 5).setHorizontalAlignment("center");
+      testSheet.getRange(rowNum, 7, 1, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    }
+  }
+
+  testSheet.autoResizeColumns(1, HEADERS.length);
+  testSheet.setColumnWidth(6, 420); // Width for day breakdowns
+  ss.setActiveSheet(testSheet);
+
+  let alertTitle = mismatchCount === 0 ? "🎉 SUCCESS: All Trip Counts Match 100%!" : "⚠️ Discrepancies Found";
+  let alertBody = `${alertTitle}\n\n` +
+    `📁 File Parsed: ${fileName}\n` +
+    `📅 Pay Period: ${pStartStr} to ${pEndStr}\n\n` +
+    `Drivers Checked: ${sortedDrivers.length}\n` +
+    `✅ Matches: ${matchCount}\n` +
+    `❌ Mismatches: ${mismatchCount}\n\n` +
+    summaryLines.join("\n") + "\n\n" +
+    (mismatchCount === 0 
+      ? "👉 Full day-by-day audit is open in the 'Daily_Balance_Test_Report' tab.\nYou can now safely run '2. Generate Payslip'!"
+      : "👉 Check the 'Daily_Balance_Test_Report' tab for details.");
+
+  SpreadsheetApp.getUi().alert(alertBody);
 }
