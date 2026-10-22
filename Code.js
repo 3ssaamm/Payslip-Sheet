@@ -307,15 +307,20 @@ function parsePayablesSheet(sheet, tz) {
     let finalPay = parseMoney(row[colMap.finalPay]);
     let cash = parseMoney(row[colMap.cash]);
 
-    // Gross fare calculation requested by user:
-    // "Gross fare in the new sheet is actually not included, you have to calculate it by adding Cash, Final Pay and Fees amounts together."
-    let gross = cash + finalPay + Math.abs(fees);
+    let cAmt = Math.abs(credits);
+    let dAmt = Math.abs(debits);
+    let netCreditsDebits = cAmt - dAmt;
+
+    // Gross fare calculation:
+    // Final Pay on the Payables sheet includes (+ credits - debits).
+    // Credits/Debits have nothing to do with Gross Fare and must NOT have fees taken on them.
+    // Subtract credits and add debits to isolate the pure trip Gross Fare:
+    let gross = cash + finalPay + Math.abs(fees) - cAmt + dAmt;
     if (gross === 0 && netFromCol > 0) {
       gross = netFromCol + tolls;
     }
     // Price no Toll = Gross Fare - Tolls
     let net = gross - tolls;
-    let netCreditsDebits = Math.abs(credits) - Math.abs(debits);
 
     driverInfo[driverName] = {
       id: driverId,
@@ -581,6 +586,15 @@ function setupInitialSheets() {
   periodEndObj.setHours(23, 59, 59, 999);
   let twoMondaysBefore = stampDate ? getTwoMondaysBefore(stampDate) : null;
 
+  let dailyBreakdown = null;
+  if (period && period.start && period.end) {
+    try {
+      dailyBreakdown = fetchDailyBalanceBreakdown(period, tz);
+    } catch (e) {
+      Logger.log("Optional daily balance fetch in setupInitialSheets: " + e.message);
+    }
+  }
+
   for (let driver in driverInfo) {
     let key = String(driver).trim().toLowerCase();
     let mRowIdx = masterIndexMap[key];
@@ -666,6 +680,30 @@ function setupInitialSheets() {
       }
     }
 
+    let dGross = driverInfo[driver].gross;
+    let dTolls = driverInfo[driver].tolls;
+    let dNet = driverInfo[driver].net;
+
+    if (dailyBreakdown) {
+      let driverDaily = getDriverDailyMap(dailyBreakdown, driver);
+      let dailyDates = Object.keys(driverDaily);
+      if (dailyDates.length > 0) {
+        let sumG = 0;
+        let sumT = 0;
+        let sumN = 0;
+        dailyDates.forEach(dt => {
+          sumG += driverDaily[dt].gross;
+          sumT += driverDaily[dt].tolls;
+          sumN += driverDaily[dt].net;
+        });
+        if (sumG > 0) {
+          dGross = sumG;
+          dTolls = sumT;
+          dNet = sumN;
+        }
+      }
+    }
+
     let sysRate = DEFAULT_RATE;
     let promoDisplay = "None/Expired";
 
@@ -674,7 +712,7 @@ function setupInitialSheets() {
       promoDisplay = currentWeekNumber + " of 4";
     } else {
       if (EIGHTY_NINETY_DRIVERS.includes(driver)) {
-        sysRate = (driverInfo[driver].net > 1000) ? ((1000 * 0.80) + ((driverInfo[driver].net - 1000) * 0.90)) / driverInfo[driver].net : 0.80;
+        sysRate = (dNet > 1000) ? ((1000 * 0.80) + ((dNet - 1000) * 0.90)) / dNet : 0.80;
       }
     }
 
@@ -684,27 +722,22 @@ function setupInitialSheets() {
     let additionalPay = existingLocalAdditions[driver] !== undefined ? parseMoney(existingLocalAdditions[driver]) : 0;
     let additionalPayDisplay = existingLocalAdditions[driver] !== undefined ? existingLocalAdditions[driver] : "";
 
-    // Financial Math (Advances First!)
-    let driverPay = driverInfo[driver].net * activeRate;
-    let driverTotal = driverPay + driverInfo[driver].tolls;
-    let basicBalance = driverTotal - driverInfo[driver].cash;
-
     let debits = driverDebits[driver] || 0;
     let advances = driverAdvances[driver] || 0;
 
     // Calculate loan deduction bound from active loans
     let maxLoanIntended = activeLoans[driver] || 0;
-    let initialNet = driverInfo[driver].net;
+    let initialNet = dNet;
     let initialPay = initialNet * activeRate;
-    let initialTotal = initialPay + driverInfo[driver].tolls;
+    let initialTotal = initialPay + dTolls;
     let initialBasicBalance = initialTotal - driverInfo[driver].cash;
     let actualAvailableFunds = initialBasicBalance + debits - advances + additionalPay;
     let predictedLoanDeduction = Math.min(maxLoanIntended, Math.max(0, actualAvailableFunds));
 
     driverRows.push({
       driver: driver,
-      gross: driverInfo[driver].gross,
-      tolls: driverInfo[driver].tolls,
+      gross: dGross,
+      tolls: dTolls,
       sysRate: sysRate,
       cash: driverInfo[driver].cash,
       debits: debits,
