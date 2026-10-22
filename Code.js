@@ -463,9 +463,10 @@ function setupInitialSheets() {
     if (overrideColIndex > -1 || additionColIndex > -1) {
       let oldData = localSettingsSheet.getRange(2, 1, localSettingsSheet.getLastRow() - 1, localSettingsSheet.getLastColumn()).getValues();
       oldData.forEach(r => {
-        if (r[0]) {
-          if (overrideColIndex > -1 && r[overrideColIndex] !== "") existingLocalOverrides[r[0]] = r[overrideColIndex];
-          if (additionColIndex > -1 && r[additionColIndex] !== "") existingLocalAdditions[r[0]] = r[additionColIndex];
+        let dName = String(r[0] || "").trim();
+        if (dName && dName.toLowerCase() !== "total" && !dName.toLowerCase().startsWith("total")) {
+          if (overrideColIndex > -1 && r[overrideColIndex] !== "") existingLocalOverrides[dName] = r[overrideColIndex];
+          if (additionColIndex > -1 && r[additionColIndex] !== "") existingLocalAdditions[dName] = r[additionColIndex];
         }
       });
     }
@@ -738,9 +739,6 @@ function setupInitialSheets() {
     dataRange.setValues(output);
     dataRange.setVerticalAlignment("middle");
 
-    let fullTableRange = localSettingsSheet.getRange(1, 1, output.length + 1, 15);
-    fullTableRange.setBorder(true, true, true, true, true, true, "#b7b7b7", SpreadsheetApp.BorderStyle.SOLID);
-
     for (let i = 0; i < output.length; i++) {
       if (i % 2 === 0) localSettingsSheet.getRange(i + 2, 1, 1, 15).setBackground("#f3f3f3");
     }
@@ -753,6 +751,45 @@ function setupInitialSheets() {
     localSettingsSheet.getRange(2, 5, output.length, 1).setNumberFormat("0.00%").setHorizontalAlignment("center");
     localSettingsSheet.getRange(2, 14, output.length, 1).setHorizontalAlignment("center");
     localSettingsSheet.getRange(2, 15, output.length, 1).setBackground("#FFF2CC").setNumberFormat("0.00%").setHorizontalAlignment("center");
+
+    // --- 9. DYNAMIC SUM ROW AT THE END OF SETTINGS ---
+    let sumRow = output.length + 2;
+    localSettingsSheet.getRange(sumRow, 1).setValue("Total").setHorizontalAlignment("left");
+
+    let sumFormulas = [
+      [
+        `=SUM(B2:B${sumRow - 1})`,
+        `=SUM(C2:C${sumRow - 1})`,
+        `=SUM(D2:D${sumRow - 1})`,
+        `=IF(D${sumRow}>0, F${sumRow}/D${sumRow}, "")`,
+        `=SUM(F2:F${sumRow - 1})`,
+        `=SUM(G2:G${sumRow - 1})`,
+        `=SUM(H2:H${sumRow - 1})`,
+        `=SUM(I2:I${sumRow - 1})`,
+        `=SUM(J2:J${sumRow - 1})`,
+        `=SUM(K2:K${sumRow - 1})`,
+        `=SUM(L2:L${sumRow - 1})`,
+        `=SUM(M2:M${sumRow - 1})`,
+        "",
+        ""
+      ]
+    ];
+    localSettingsSheet.getRange(sumRow, 2, 1, 14).setFormulas(sumFormulas);
+
+    let sumRange = localSettingsSheet.getRange(sumRow, 1, 1, 15);
+    sumRange.setFontWeight("bold")
+      .setBackground("#D9E1F2")
+      .setVerticalAlignment("middle");
+
+    localSettingsSheet.getRange(sumRow, 2, 1, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(sumRow, 5).setNumberFormat("0.00%").setHorizontalAlignment("center");
+    localSettingsSheet.getRange(sumRow, 6, 1, 8).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    localSettingsSheet.getRange(sumRow, 14, 1, 2).setHorizontalAlignment("center");
+
+    let fullTableRange = localSettingsSheet.getRange(1, 1, sumRow, 15);
+    fullTableRange.setBorder(true, true, true, true, true, true, "#b7b7b7", SpreadsheetApp.BorderStyle.SOLID);
+    sumRange.setBorder(true, true, true, true, true, true, "#3d85c6", SpreadsheetApp.BorderStyle.SOLID);
+    localSettingsSheet.setRowHeight(sumRow, 28);
   }
 
   localSettingsSheet.autoResizeColumns(1, 15);
@@ -1890,15 +1927,15 @@ function runCompletePayroll() {
     let additionalColIndex = headers.indexOf("Refunds / Additions");
 
     localSetSheet.getRange(2, 1, localSetSheet.getLastRow() - 1, localSetSheet.getLastColumn()).getValues().forEach(row => {
-      let driver = row[0];
+      let driver = String(row[0] || "").trim();
+      if (!driver || driver.toLowerCase() === "total" || driver.toLowerCase().startsWith("total")) return;
+
       let sysRate = rateColIndex > -1 ? Number(row[rateColIndex]) || 0 : 0;
       let override = overrideColIndex > -1 ? row[overrideColIndex] : "";
       let addPay = additionalColIndex > -1 ? parseMoney(row[additionalColIndex]) : 0;
 
-      if (driver) {
-        finalRates[driver] = (override !== "" && override != null) ? Number(override) : sysRate;
-        additionalPayments[driver] = addPay;
-      }
+      finalRates[driver] = (override !== "" && override != null) ? Number(override) : sysRate;
+      additionalPayments[driver] = addPay;
     });
   }
 
