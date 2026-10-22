@@ -574,7 +574,7 @@ function setupInitialSheets() {
   const DEFAULT_RATE = 0.90;
   const PROMO_RATE = 0.95;
 
-  let output = [];
+  let driverRows = [];
   let updatedMaster = false;
 
   let periodEndObj = (period && period.end) ? new Date(period.end) : (stampDate ? new Date(stampDate) : new Date());
@@ -692,20 +692,27 @@ function setupInitialSheets() {
     let debits = driverDebits[driver] || 0;
     let advances = driverAdvances[driver] || 0;
 
-    // Calculate exactly what is available to cover the loan after advances & additional payments
-    let actualAvailableFunds = basicBalance + debits - advances + additionalPay;
-
+    // Calculate loan deduction bound from active loans
     let maxLoanIntended = activeLoans[driver] || 0;
+    let initialNet = driverInfo[driver].net;
+    let initialPay = initialNet * activeRate;
+    let initialTotal = initialPay + driverInfo[driver].tolls;
+    let initialBasicBalance = initialTotal - driverInfo[driver].cash;
+    let actualAvailableFunds = initialBasicBalance + debits - advances + additionalPay;
     let predictedLoanDeduction = Math.min(maxLoanIntended, Math.max(0, actualAvailableFunds));
 
-    let dashboardDriverBalance = basicBalance + debits + additionalPay - predictedLoanDeduction; // Dashboard Math
-    let companyFee = driverInfo[driver].gross - driverTotal;
-
-    output.push([
-      driver, driverInfo[driver].gross, driverInfo[driver].tolls, driverInfo[driver].net,
-      sysRate, driverPay, driverTotal, driverInfo[driver].cash, debits, additionalPayDisplay, predictedLoanDeduction,
-      dashboardDriverBalance, companyFee, promoDisplay, override
-    ]);
+    driverRows.push({
+      driver: driver,
+      gross: driverInfo[driver].gross,
+      tolls: driverInfo[driver].tolls,
+      sysRate: sysRate,
+      cash: driverInfo[driver].cash,
+      debits: debits,
+      additionalPayDisplay: additionalPayDisplay,
+      predictedLoanDeduction: predictedLoanDeduction,
+      promoDisplay: promoDisplay,
+      override: override
+    });
   }
 
   // --- 7. WRITE BACK TO MASTER DB IF WE STAMPED PROMOS ---
@@ -721,8 +728,8 @@ function setupInitialSheets() {
     }
   }
 
-  // --- 8. FORMATTING THE PROFESSIONAL DASHBOARD ---
-  output.sort((a, b) => a[0].localeCompare(b[0]));
+  // --- 8. FORMATTING THE PROFESSIONAL DASHBOARD (FORMULA-FIRST ARCHITECTURE) ---
+  driverRows.sort((a, b) => a.driver.localeCompare(b.driver));
   localSettingsSheet.getRange("A:O").clearContent().clearFormat();
 
   let newHeaders = ["Driver Name", "Gross Fare", "Tolls", "Price no Toll", "System Rate", "Driver Pay", "Driver Total", "Cash Collected", "Credits & Debits", "Refunds / Additions", "Loan Deduction", "Driver Balance", "Company Fee", "Promo Payments Taken", "Manual Override %"];
@@ -733,6 +740,28 @@ function setupInitialSheets() {
     .setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
 
   localSettingsSheet.setRowHeight(1, 40);
+
+  // Generate dynamic formulas for every driver row so adjustments in Override or Refunds update live!
+  let output = driverRows.map((d, i) => {
+    let r = i + 2;
+    return [
+      d.driver,
+      d.gross,
+      d.tolls,
+      `=B${r}-C${r}`,
+      d.sysRate,
+      `=D${r}*IF(ISNUMBER(O${r}), O${r}, E${r})`,
+      `=F${r}+C${r}`,
+      d.cash,
+      d.debits,
+      d.additionalPayDisplay,
+      d.predictedLoanDeduction,
+      `=G${r}-H${r}+I${r}+J${r}-K${r}`,
+      `=B${r}-G${r}`,
+      d.promoDisplay,
+      d.override
+    ];
+  });
 
   if (output.length > 0) {
     let dataRange = localSettingsSheet.getRange(2, 1, output.length, 15);
@@ -1365,13 +1394,14 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
     currentRow++;
 
     // Daily Rows from Daily Balance
+    let firstDailyRow = currentRow;
     if (hasDaily) {
       dailyDates.forEach(isoDate => {
         let day = driverDaily[isoDate];
         let dayPrice = day.net * activeRate;
-        let dayDriverTotal = dayPrice + day.tolls;
+        let dayTotalFormula = `=D${currentRow}+E${currentRow}`;
         paySheet.getRange(currentRow, 2, 1, 5).setValues([
-          [day.displayDate, day.count, dayPrice, day.tolls, dayDriverTotal]
+          [day.displayDate, day.count, dayPrice, day.tolls, dayTotalFormula]
         ]);
         paySheet.getRange(currentRow, 2).setHorizontalAlignment("right");
         paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
@@ -1379,20 +1409,28 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
         currentRow++;
       });
     }
+    let lastDailyRow = currentRow - 1;
 
     // Grand Total Row
+    let grandTotalRow = currentRow;
+    let grandTrips = hasDaily ? `=SUM(C${firstDailyRow}:C${lastDailyRow})` : totalTrips;
+    let grandPrice = hasDaily ? `=SUM(D${firstDailyRow}:D${lastDailyRow})` : driverPay;
+    let grandTolls = hasDaily ? `=SUM(E${firstDailyRow}:E${lastDailyRow})` : totalTolls;
+
     let grandRange = paySheet.getRange(currentRow, 2, 1, 4);
-    grandRange.setValues([["Grand Total", totalTrips, driverPay, totalTolls]])
+    grandRange.setValues([["Grand Total", grandTrips, grandPrice, grandTolls]])
       .setFontWeight("bold").setBackground(HEADER_BLUE).setBorder(true, false, true, false, false, false, BORDER_BLUE, SpreadsheetApp.BorderStyle.SOLID);
     paySheet.getRange(currentRow, 2).setHorizontalAlignment("left");
     paySheet.getRange(currentRow, 3).setHorizontalAlignment("center");
     paySheet.getRange(currentRow, 4, 1, 2).setHorizontalAlignment("right");
 
     let totalCell = paySheet.getRange(currentRow, 6, 2, 1);
-    totalCell.merge().setValue(driverTotal).setFontWeight("bold").setFontSize(20).setBackground(HEADER_BLUE)
+    totalCell.merge().setFormula(`=D${grandTotalRow}+E${grandTotalRow}`).setFontWeight("bold").setFontSize(20).setBackground(HEADER_BLUE)
       .setVerticalAlignment("middle").setHorizontalAlignment("center")
       .setBorder(true, true, true, true, null, null, "black", SpreadsheetApp.BorderStyle.SOLID_THICK);
     currentRow += 2;
+
+    let startDeductRow = currentRow;
 
     // Sub: Cash Collected
     if (totalCash > 0) {
@@ -1491,21 +1529,27 @@ function generatePayablesPayslip(ss, payablesSheet, localSetSheet, finalRates, a
       });
     }
 
+    let lastDeductRow = currentRow - 1;
+
     // Blank row before Driver Balance
     currentRow++;
 
     let finalBal = preLoanBalance - totalLoanDeducted;
     totalAllBalances += finalBal;
 
+    let driverBalFormula = (lastDeductRow >= startDeductRow)
+      ? `=F${grandTotalRow}+SUM(F${startDeductRow}:F${lastDeductRow})`
+      : `=F${grandTotalRow}`;
+
     paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("Driver Balance").setHorizontalAlignment("center");
-    paySheet.getRange(currentRow, 6).setValue(finalBal).setHorizontalAlignment("right");
+    paySheet.getRange(currentRow, 6).setFormula(driverBalFormula).setHorizontalAlignment("right");
     paySheet.getRange(currentRow, 4, 1, 3).setBackground(HEADER_BLUE).setFontWeight("bold").setFontColor("black").setFontStyle("normal");
     currentRow += 3; // Leaves exactly 2 blank rows before the next driver
   }
 
-  // TOTAL PAYOUT
+  // TOTAL PAYOUT (Formula-first dynamic sum)
   paySheet.getRange(currentRow, 4, 1, 2).merge().setValue("TOTAL PAYOUT").setHorizontalAlignment("center");
-  paySheet.getRange(currentRow, 6).setValue(totalAllBalances).setHorizontalAlignment("right");
+  paySheet.getRange(currentRow, 6).setFormula(`=SUMIF(D1:D${currentRow - 1}, "Driver Balance", F1:F${currentRow - 1})`).setHorizontalAlignment("right");
   paySheet.getRange(currentRow, 4, 1, 3).setBackground(HEADER_BLUE).setFontWeight("bold").setFontSize(12)
     .setBorder(true, true, true, true, false, false, "black", SpreadsheetApp.BorderStyle.SOLID);
 
